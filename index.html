@@ -123,11 +123,13 @@
     }
 
     function blockDemand(block, upgrade) {
-      const p = state.player;
-      const pressure = currentFireRate() * p.shots;
-      const attackBonus = Math.sqrt(Math.max(1, p.attack / 240));
-      const scaling = 1 + Math.max(0, pressure - p.baseFireRate) * 0.035 + (attackBonus - 1) * 0.35;
+      const speed = displayedFireMult();
+      const scaling = 1 + Math.max(0, speed - 1) * 0.1;
       return Math.ceil(upgrade.cost * block.scale * scaling);
+    }
+
+    function blockHitProgress() {
+      return 1 / Math.pow(displayedFireMult(), 0.45);
     }
 
     function chooseUpgrade(preferGood) {
@@ -149,10 +151,15 @@
       const head = index === 0;
       const armored = index > 0 && index % 9 === 0;
       const reward = index > 4 && index % 11 === 0;
-      const len = index === 0 ? 96 : rand(64, 116);
-      const width = index === 0 ? 92 : rand(60, 84);
       const base = 9000 + index * 260;
-      const hp = head ? 280000 : reward ? base * 3.4 : armored ? base * 6.5 : base * rand(0.75, 1.65);
+      const normalScale = rand(0.75, 1.85);
+      const hpScale = head ? 9.5 : reward ? 3.4 : armored ? 6.5 : normalScale;
+      const len = head ? 250
+        : armored ? rand(290, 430)
+        : reward ? rand(250, 380)
+        : rand(160, 250) + normalScale * 42;
+      const width = head ? 190 : armored ? rand(164, 210) : reward ? rand(152, 196) : rand(136, 176);
+      const hp = head ? 280000 : base * hpScale;
       return {
         id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${index}`,
         hp: Math.round(hp),
@@ -199,7 +206,6 @@
         title: u.title,
         color: u.color,
         apply: u.apply,
-        hitCooldown: 0,
         flash: 0
       });
     }
@@ -218,7 +224,6 @@
         type: "",
         title: "",
         color: "#ffe05a",
-        hitCooldown: 0,
         flash: 0
       };
       setupBlock(block, block.baseCost);
@@ -341,12 +346,24 @@
     }
 
     function bulletHitsBody(b, pts) {
+      for (let i = 0; i < state.boss.segments.length; i++) {
+        const seg = state.boss.segments[i];
+        const p = pts[i];
+        const radiusX = seg.width * (i === 0 ? 0.6 : 0.525);
+        const radiusY = seg.width * 0.41;
+        const nx = (b.x - p.x) / radiusX;
+        const ny = (b.y - p.y) / radiusY;
+        if (nx * nx + ny * ny < 1.15) return { seg, x: b.x, y: b.y };
+      }
+
       for (let i = 0; i < state.boss.segments.length - 1; i++) {
         const seg = state.boss.segments[i];
         const next = state.boss.segments[i + 1];
         const hit = pointToSegmentDistance(b, pts[i], pts[i + 1]);
         const width = ((seg.width + next.width) * 0.5) / 2;
-        if (hit.d < width + b.r) return { seg, x: hit.x, y: hit.y };
+        if (hit.d < width + b.r) {
+          return { seg: hit.t < 0.5 ? seg : next, x: hit.x, y: hit.y };
+        }
       }
 
       const tailIndex = state.boss.segments.length - 1;
@@ -482,13 +499,10 @@
           if (b.x > block.x - block.w / 2 && b.x < block.x + block.w / 2
             && b.y > block.y - block.h / 2 && b.y < block.y + block.h / 2) {
             consumed = true;
-            if (block.hitCooldown <= 0) {
-              block.hp -= 1;
-              block.hitCooldown = 0.14;
-              block.flash = 0.08;
-              if (block.hp <= 0) {
-                resetBlock(block);
-              }
+            block.hp -= blockHitProgress();
+            block.flash = 0.08;
+            if (block.hp <= 0) {
+              resetBlock(block);
             }
             break;
           }
@@ -509,7 +523,6 @@
       }
       for (const block of state.blocks) {
         block.flash = Math.max(0, block.flash - dt);
-        block.hitCooldown = Math.max(0, block.hitCooldown - dt);
       }
       for (const seg of state.boss.segments) {
         seg.hit = Math.max(0, seg.hit - dt);
@@ -654,22 +667,24 @@
         ctx.lineTo(q.x, q.y);
         ctx.stroke();
 
-        const bodyGrad = ctx.createLinearGradient(p.x, p.y, q.x, q.y);
-        bodyGrad.addColorStop(0, seg.hit ? "#fff5a7" : seg.hue);
-        bodyGrad.addColorStop(0.52, i % 2 ? "#e5302f" : "#f2c62d");
-        bodyGrad.addColorStop(1, next.hue);
+        const midX = (p.x + q.x) / 2;
+        const midY = (p.y + q.y) / 2;
         ctx.lineWidth = width;
-        ctx.strokeStyle = bodyGrad;
+        ctx.strokeStyle = seg.hit ? "#fff5a7" : seg.hue;
         ctx.beginPath();
         ctx.moveTo(p.x, p.y);
+        ctx.lineTo(midX, midY);
+        ctx.stroke();
+
+        ctx.strokeStyle = next.hit ? "#fff5a7" : next.hue;
+        ctx.beginPath();
+        ctx.moveTo(midX, midY);
         ctx.lineTo(q.x, q.y);
         ctx.stroke();
 
         const ang = Math.atan2(q.y - p.y, q.x - p.x);
-        const seamX = (p.x + q.x) / 2;
-        const seamY = (p.y + q.y) / 2;
         ctx.save();
-        ctx.translate(seamX, seamY);
+        ctx.translate(midX, midY);
         ctx.rotate(ang + Math.PI / 2);
         ctx.strokeStyle = "rgba(24, 20, 16, 0.58)";
         ctx.lineWidth = 4;
