@@ -91,9 +91,7 @@
       blocks: [],
       rewards: [],
       particles: [],
-      shockwaves: [],
       menuButtons: [],
-      players: [],
       player: {
         x: W / 2,
         y: H - 126,
@@ -118,17 +116,7 @@
         advance: 0,
         spawned: 0,
         segments: []
-      },
-      bossCache: null
-    };
-
-    const net = {
-      enabled: location.protocol === "http:" || location.protocol === "https:",
-      ws: null,
-      id: "",
-      connected: false,
-      lastInputAt: 0,
-      status: location.protocol === "file:" ? "单机模式" : "联机连接中..."
+      }
     };
 
     const characterImages = {};
@@ -147,131 +135,6 @@
       const img = new Image();
       img.src = character.image;
       characterImages[key] = img;
-    }
-
-    const bossSheetImage = new Image();
-    const bossFullImage = new Image();
-    let bossSheetHeadSprite = null;
-    let bossSegmentSprites = [];
-    const BOSS_SHEET_SIZE = { w: 1488, h: 1118 };
-    const bossSheetHeadCrop = { x: 16, y: 24, w: 300, h: 250 };
-    const bossSheetSegmentCrops = [
-      { x: 540, y: 82, w: 190, h: 188 },
-      { x: 755, y: 88, w: 186, h: 178 },
-      { x: 988, y: 100, w: 190, h: 170 },
-      { x: 1200, y: 100, w: 190, h: 170 },
-      { x: 34, y: 330, w: 195, h: 188 },
-      { x: 298, y: 325, w: 205, h: 188 },
-      { x: 552, y: 325, w: 205, h: 188 },
-      { x: 820, y: 330, w: 205, h: 188 },
-      { x: 1065, y: 324, w: 240, h: 190 },
-      { x: 780, y: 605, w: 350, h: 175 }
-    ];
-
-    function scaledCrop(crop, img) {
-      return {
-        x: crop.x / BOSS_SHEET_SIZE.w * img.naturalWidth,
-        y: crop.y / BOSS_SHEET_SIZE.h * img.naturalHeight,
-        w: crop.w / BOSS_SHEET_SIZE.w * img.naturalWidth,
-        h: crop.h / BOSS_SHEET_SIZE.h * img.naturalHeight
-      };
-    }
-
-    function makeTransparentSprite(img, cropDef) {
-      const crop = scaledCrop(cropDef, img);
-      const c = document.createElement("canvas");
-      c.width = Math.max(1, Math.round(crop.w));
-      c.height = Math.max(1, Math.round(crop.h));
-      const cctx = c.getContext("2d");
-      cctx.drawImage(img, crop.x, crop.y, crop.w, crop.h, 0, 0, c.width, c.height);
-      const data = cctx.getImageData(0, 0, c.width, c.height);
-      const pixels = data.data;
-      const total = c.width * c.height;
-      const visited = new Uint8Array(total);
-      const queue = [];
-      const isSheetBg = (index) => {
-        const i = index * 4;
-        const r = pixels[i];
-        const g = pixels[i + 1];
-        const b = pixels[i + 2];
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        return r > 218 && g > 218 && b > 218 && max - min < 46;
-      };
-      const pushBg = (index) => {
-        if (index < 0 || index >= total || visited[index] || !isSheetBg(index)) return;
-        visited[index] = 1;
-        queue.push(index);
-      };
-      for (let x = 0; x < c.width; x++) {
-        pushBg(x);
-        pushBg((c.height - 1) * c.width + x);
-      }
-      for (let y = 0; y < c.height; y++) {
-        pushBg(y * c.width);
-        pushBg(y * c.width + c.width - 1);
-      }
-      for (let qi = 0; qi < queue.length; qi++) {
-        const index = queue[qi];
-        const x = index % c.width;
-        const y = Math.floor(index / c.width);
-        if (x > 0) pushBg(index - 1);
-        if (x < c.width - 1) pushBg(index + 1);
-        if (y > 0) pushBg(index - c.width);
-        if (y < c.height - 1) pushBg(index + c.width);
-      }
-      for (let index = 0; index < total; index++) {
-        if (!visited[index]) continue;
-        const i = index * 4;
-        pixels[i + 3] = 0;
-      }
-      cctx.putImageData(data, 0, 0);
-      return c;
-    }
-
-    function makeHitSprite(sprite) {
-      const c = document.createElement("canvas");
-      c.width = sprite.width;
-      c.height = sprite.height;
-      const cctx = c.getContext("2d");
-      cctx.drawImage(sprite, 0, 0);
-      cctx.globalCompositeOperation = "source-atop";
-      cctx.fillStyle = "rgba(31, 4, 52, 0.72)";
-      cctx.fillRect(0, 0, c.width, c.height);
-      cctx.globalCompositeOperation = "source-over";
-      cctx.globalAlpha = 0.44;
-      cctx.drawImage(sprite, 0, 0);
-      cctx.globalAlpha = 1;
-      return c;
-    }
-
-    function makeBossSprite(img, cropDef) {
-      const normal = makeTransparentSprite(img, cropDef);
-      return { normal, hit: makeHitSprite(normal) };
-    }
-
-    function prepareBossSheetSprites() {
-      bossSheetHeadSprite = makeBossSprite(bossSheetImage, bossSheetHeadCrop);
-      bossSegmentSprites = bossSheetSegmentCrops.map(crop => makeBossSprite(bossSheetImage, crop));
-    }
-
-    bossSheetImage.onload = prepareBossSheetSprites;
-    bossSheetImage.src = "resource/boss_sheet.png";
-    bossFullImage.src = "resource/boss_full.png";
-
-    function spriteReady(sprite) {
-      const img = sprite && (sprite.normal || sprite);
-      return img && img.width > 0 && img.height > 0;
-    }
-
-    function bossSegmentSpriteForColor(color) {
-      if (!bossSegmentSprites.length) return null;
-      const byIndex = (index) => bossSegmentSprites[index] || bossSegmentSprites[1] || bossSegmentSprites[0] || null;
-      if (color === "#67dfff" || color === "#76e8ff") return byIndex(2);
-      if (color === "#8bdfff") return byIndex(7);
-      if (color === "#d865ff") return byIndex(0);
-      if (color === "#ff79c7" || color === "#ff8bd8") return byIndex(6);
-      return byIndex(1);
     }
 
     const BALANCE = {
@@ -370,13 +233,7 @@
         if (upgrade.type === "attack") state.player.attack += upgrade.amount;
         if (upgrade.type === "speed") state.player.fireMult += upgrade.amount;
         if (upgrade.type === "shot") state.player.shots = Math.min(BALANCE.player.maxShots, state.player.shots + upgrade.amount);
-        if (upgrade.type === "repel") {
-          state.boss.advance -= upgrade.amount;
-          state.shake = Math.max(state.shake, 14);
-          floatText("击退!", W / 2, H - 430, "#79ffbd", "repel");
-          shockwave(W / 2, H - 420, "#79ffbd");
-          burst(W / 2, H - 420, "#79ffbd", 34);
-        }
+        if (upgrade.type === "repel") state.boss.advance -= upgrade.amount;
         if (upgrade.type === "clone") {
           state.player.clones = Math.min(BALANCE.player.maxClones, state.player.clones + upgrade.amount);
           if (upgrade.rare) state.player.rareClones += upgrade.amount;
@@ -751,8 +608,6 @@
       state.blocks.length = 0;
       state.rewards.length = 0;
       state.particles.length = 0;
-      state.shockwaves.length = 0;
-      state.bossCache = null;
       state.emergencyTimer = 0;
       Object.assign(state.player, {
         x: W / 2,
@@ -778,88 +633,7 @@
     function startRun(difficulty, mode) {
       state.difficulty = difficulty;
       state.mode = mode;
-      if (net.enabled) {
-        if (!net.connected) {
-          net.status = "等待联机连接";
-          return;
-        }
-        sendNet({ type: "start", difficulty, mode, character: state.character });
-        return;
-      }
       restart();
-    }
-
-    function sendNet(message) {
-      if (!net.ws || net.ws.readyState !== WebSocket.OPEN) return;
-      net.ws.send(JSON.stringify(message));
-    }
-
-    function sendNetInput(force = false) {
-      if (!net.enabled || !net.connected) return;
-      const now = performance.now();
-      if (!force && now - net.lastInputAt < 45) return;
-      net.lastInputAt = now;
-      const dir = (state.keys.has("ArrowRight") || state.keys.has("KeyD") ? 1 : 0)
-        - (state.keys.has("ArrowLeft") || state.keys.has("KeyA") ? 1 : 0);
-      sendNet({
-        type: "input",
-        pointerDown: state.pointerDown,
-        pointerX: state.pointerX,
-        dir,
-        character: state.character
-      });
-    }
-
-    function applyNetSnapshot(snapshot) {
-      state.started = snapshot.started;
-      state.over = snapshot.over;
-      state.win = snapshot.win;
-      state.time = snapshot.time;
-      state.duration = snapshot.duration;
-      state.infinite = snapshot.infinite;
-      state.score = snapshot.score;
-      state.difficulty = snapshot.difficulty || state.difficulty;
-      state.mode = snapshot.mode || state.mode;
-      state.boss = snapshot.boss;
-      state.blocks = snapshot.blocks || [];
-      state.rewards = snapshot.rewards || [];
-      state.bullets = snapshot.bullets || [];
-      state.floating = snapshot.floating || [];
-      state.particles = snapshot.particles || [];
-      state.shockwaves = snapshot.shockwaves || [];
-      state.players = snapshot.players || [];
-      const me = state.players.find(p => p.id === net.id) || state.players[0];
-      if (me) {
-        state.character = me.character || state.character;
-        Object.assign(state.player, me.stats || {}, { x: me.x, y: me.y, hp: me.hp, r: me.r || state.player.r });
-      }
-      state.bossCache = null;
-    }
-
-    function connectMultiplayer() {
-      if (!net.enabled || !("WebSocket" in window)) return;
-      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      net.ws = new WebSocket(`${protocol}//${location.host}/ws`);
-      net.ws.addEventListener("open", () => {
-        net.connected = true;
-        net.status = "局域网联机";
-        sendNet({ type: "hello", character: state.character });
-      });
-      net.ws.addEventListener("message", event => {
-        const message = JSON.parse(event.data);
-        if (message.type === "welcome") {
-          net.id = message.id;
-          return;
-        }
-        if (message.type === "snapshot") applyNetSnapshot(message.state);
-      });
-      net.ws.addEventListener("close", () => {
-        net.connected = false;
-        net.status = "联机断开，刷新重连";
-      });
-      net.ws.addEventListener("error", () => {
-        net.status = "联机连接失败";
-      });
     }
 
     function shoot() {
@@ -883,7 +657,6 @@
             vx: offset * 0.52,
             vy: -p.bulletSpeed,
             damage: p.attack * shooterDamageScale * (crit ? 2 : 1),
-            crit,
             pierce: p.pierce,
             hitIds: [],
             color: crit ? "#ff72b8" : i % 2 ? "#59f0ff" : "#ffd357"
@@ -898,91 +671,6 @@
       const seg = state.boss.segments[index];
       const delay = (seg.knockback || 0) + (seg.settle || 0);
       return bossPathPoint(state.boss.advance - trail - delay);
-    }
-
-    function bossTrailOffsets() {
-      const trails = [];
-      let trail = 0;
-      for (let i = 0; i < state.boss.segments.length; i++) {
-        trails.push(trail);
-        trail += state.boss.segments[i].len * 0.72;
-      }
-      return trails;
-    }
-
-    function segmentDelay(seg) {
-      return (seg.knockback || 0) + (seg.settle || 0);
-    }
-
-    function bossSegmentPathPoint(index, local, trails) {
-      const seg = state.boss.segments[index];
-      const next = state.boss.segments[index + 1] || seg;
-      const gap = seg.len * 0.72;
-      const t = clamp(local, 0, 1);
-      const delay = segmentDelay(seg) * (1 - t) + segmentDelay(next) * t;
-      return bossPathPoint(state.boss.advance - trails[index] - gap * t - delay);
-    }
-
-    function buildBossFrameCache() {
-      const segments = state.boss.segments;
-      const trails = [];
-      const pts = [];
-      const labels = [];
-      const hitboxes = [];
-      const render = [];
-      let trail = 0;
-      for (let i = 0; i < segments.length; i++) {
-        trails[i] = trail;
-        const seg = segments[i];
-        pts[i] = bossPathPoint(state.boss.advance - trail - segmentDelay(seg));
-        trail += seg.len * 0.72;
-      }
-
-      for (let i = 0; i < segments.length - 1; i++) {
-        const seg = segments[i];
-        const next = segments[i + 1];
-        const gap = seg.len * 0.72;
-        const start = bossSegmentPathPoint(i, 0.02, trails);
-        const mid = bossSegmentPathPoint(i, 0.5, trails);
-        const end = bossSegmentPathPoint(i, 0.98, trails);
-        const radius = ((seg.width + next.width) * 0.5) * 0.44;
-        const maxRadius = radius + 16;
-        const minX = Math.min(start.x, mid.x, end.x) - maxRadius;
-        const maxX = Math.max(start.x, mid.x, end.x) + maxRadius;
-        const minY = Math.min(start.y, mid.y, end.y) - maxRadius;
-        const maxY = Math.max(start.y, mid.y, end.y) + maxRadius;
-        hitboxes[i] = { seg, start, mid, end, radius, minX, maxX, minY, maxY };
-        labels[i] = mid;
-
-        const count = Math.max(3, Math.floor(gap / 36));
-        const visualStart = bossSegmentPathPoint(i, 0.08, trails);
-        const visualEnd = bossSegmentPathPoint(i, 0.92, trails);
-        const flowAngle = Math.atan2(visualEnd.y - visualStart.y, visualEnd.x - visualStart.x);
-        const plates = [];
-        for (let j = count - 1; j >= 0; j--) {
-          const t = (j + 0.5) / count;
-          const p = bossSegmentPathPoint(i, t, trails);
-          plates.push({
-            x: p.x,
-            y: p.y,
-            width: seg.width * (1 - t) + next.width * t,
-            length: gap / count * 1.62,
-            phase: i + j
-          });
-        }
-        render[i] = {
-          seg,
-          color: bossSegmentColor(seg, i),
-          angle: flowAngle,
-          plates
-        };
-      }
-      state.bossCache = { trails, pts, labels, hitboxes, render };
-      return state.bossCache;
-    }
-
-    function bossFrameCache() {
-      return state.bossCache || buildBossFrameCache();
     }
 
     function bossPathDistance(index) {
@@ -1054,6 +742,10 @@
       }
     }
 
+    function bulletHitsSegment(b, p, seg) {
+      return Math.hypot(b.x - p.x, b.y - p.y) < seg.width * 0.5 + b.r;
+    }
+
     function pointToSegmentDistance(p, a, b) {
       const abx = b.x - a.x;
       const aby = b.y - a.y;
@@ -1066,41 +758,44 @@
       return { d: Math.hypot(p.x - x, p.y - y), x, y, t };
     }
 
-    function bulletHitsBody(b, cache) {
-      for (const box of cache.hitboxes) {
-        if (!box) continue;
-        const seg = box.seg;
+    function bulletHitsBody(b, pts) {
+      for (let i = 0; i < state.boss.segments.length; i++) {
+        const seg = state.boss.segments[i];
         if (b.hitIds && b.hitIds.includes(seg.id)) continue;
-        if (b.x < box.minX - b.r || b.x > box.maxX + b.r || b.y < box.minY - b.r || b.y > box.maxY + b.r) continue;
-        const radius = box.radius + b.r;
-        const hitA = pointToSegmentDistance(b, box.start, box.mid);
-        if (hitA.d < radius) {
-          return { seg, x: hitA.x, y: hitA.y };
-        }
-        const hitB = pointToSegmentDistance(b, box.mid, box.end);
-        if (hitB.d < radius) {
-          return { seg, x: hitB.x, y: hitB.y };
+        const p = pts[i];
+        const radiusX = seg.width * (i === 0 ? 0.6 : 0.525);
+        const radiusY = seg.width * 0.41;
+        const nx = (b.x - p.x) / radiusX;
+        const ny = (b.y - p.y) / radiusY;
+        if (nx * nx + ny * ny < 1.15) return { seg, x: b.x, y: b.y };
+      }
+
+      for (let i = 0; i < state.boss.segments.length - 1; i++) {
+        const seg = state.boss.segments[i];
+        const next = state.boss.segments[i + 1];
+        const hit = pointToSegmentDistance(b, pts[i], pts[i + 1]);
+        const width = ((seg.width + next.width) * 0.5) / 2;
+        if (hit.d < width + b.r) {
+          const target = hit.t < 0.5 ? seg : next;
+          if (b.hitIds && b.hitIds.includes(target.id)) continue;
+          return { seg: target, x: hit.x, y: hit.y };
         }
       }
 
       const tailIndex = state.boss.segments.length - 1;
       const tail = state.boss.segments[tailIndex];
-      const p = cache.pts[tailIndex];
+      const p = pts[tailIndex];
       if (tail && (!b.hitIds || !b.hitIds.includes(tail.id)) && Math.hypot(b.x - p.x, b.y - p.y) < tail.width * 0.5 + b.r) {
         return { seg: tail, x: p.x, y: p.y };
       }
       return null;
     }
 
-    function damageSegment(seg, amount, x, y, crit = false) {
+    function damageSegment(seg, amount, x, y) {
       seg.hp -= amount;
-      seg.hit = 0.28;
-      if (crit) {
-        floatText(`-${Math.round(amount)}`, x, y - 18, "#ff5fb5", "crit");
-      } else {
-        floatText(`-${Math.round(amount)}`, x, y, "#fffdf2", "damage");
-        burst(x, y, seg.hue, 4);
-      }
+      seg.hit = 0.12;
+      floatText(`-${Math.round(amount)}`, x, y, "#ffffff");
+      burst(x, y, seg.hue, 8);
       if (seg.hp <= 0) {
         const idx = state.boss.segments.indexOf(seg);
         const wasHead = idx === 0;
@@ -1116,24 +811,17 @@
           }
         }
         keepBossEndless();
-        state.bossCache = null;
         state.score += Math.round(seg.maxHp);
         if (wasHead) state.boss.advance -= 220 + removedTrail;
-        state.shake = wasHead ? 16 : 9;
-        if (wasHead) {
-          floatText("头部击退!", x, y - 28, "#59f0ff", "repel");
-        }
-        breakExplosion(x, y, wasHead ? "#59f0ff" : "#7b2cff");
-        shockwave(x, y, wasHead ? "#59f0ff" : "#7b2cff", wasHead ? "normal" : "break");
+        state.shake = wasHead ? 16 : 8;
+        floatText(wasHead ? "头部击退!" : "断节!", x, y - 28, wasHead ? "#59f0ff" : "#ffd65c");
         if (seg.reward) dropReward(x, y);
-        return true;
       }
-      return false;
     }
 
     function dropReward(x, y) {
       spawnRewardChoices(x, y, true);
-      floatText("奖励关节!", x, y - 54, "#7cff8a", "reward");
+      floatText("奖励关节!", x, y - 54, "#7cff8a");
     }
 
     function spawnRewardChoices(x, y, preferRare = false) {
@@ -1157,25 +845,9 @@
       }
     }
 
-    function floatText(text, x, y, color, style = "normal") {
+    function floatText(text, x, y, color) {
       if (state.floating.length > 90) state.floating.shift();
-      const max = style === "crit" ? 1.05 : style === "repel" || style === "break" ? 1.15 : 0.9;
-      state.floating.push({
-        text,
-        x,
-        y,
-        color,
-        style,
-        vx: style === "damage" ? rand(-22, 22) : 0,
-        life: max,
-        max
-      });
-    }
-
-    function shockwave(x, y, color, style = "normal") {
-      if (state.shockwaves.length > 18) state.shockwaves.shift();
-      const max = style === "break" ? 0.62 : 0.42;
-      state.shockwaves.push({ x, y, color, radius: style === "break" ? 12 : 22, style, life: max, max });
+      state.floating.push({ text, x, y, color, life: 0.9, max: 0.9 });
     }
 
     function burst(x, y, color, n) {
@@ -1194,35 +866,7 @@
       }
     }
 
-    function breakExplosion(x, y, color) {
-      if (state.particles.length > 260) return;
-      const room = 260 - state.particles.length;
-      const n = Math.min(58, room);
-      state.shake = Math.max(state.shake, 8);
-      for (let i = 0; i < n; i++) {
-        const a = rand(0, Math.PI * 2);
-        const speed = rand(210, 560);
-        state.particles.push({
-          x,
-          y,
-          vx: Math.cos(a) * speed,
-          vy: Math.sin(a) * speed - 90,
-          r: rand(5, 16),
-          rot: rand(0, Math.PI),
-          vr: rand(-8, 8),
-          color: i % 5 === 0 ? "#ffffff" : i % 2 ? color : "#2b083f",
-          kind: i % 3 === 0 ? "shard" : "spark",
-          life: rand(0.42, 0.9)
-        });
-      }
-    }
-
     function update(dt) {
-      if (net.enabled) {
-        if (net.connected) sendNetInput();
-        state.shake = Math.max(0, state.shake - dt * 42);
-        return;
-      }
       if (!state.started) return;
       if (state.over) return;
       if (state.infinite) {
@@ -1273,7 +917,6 @@
       const mode = BALANCE.modes[state.mode];
       state.boss.advance += dt * (BALANCE.boss.speedBase * difficulty.speed * mode.speed
         + Math.min(BALANCE.boss.speedRampTime, elapsed) * BALANCE.boss.speedRamp * difficulty.ramp * mode.speed);
-      state.bossCache = null;
       state.shake = Math.max(0, state.shake - dt * 42);
       state.dangerCooldown = Math.max(0, state.dangerCooldown - dt);
       tuneIncomingBossSegments();
@@ -1304,7 +947,6 @@
     }
 
     function updateBullets(dt) {
-      let bossCache = null;
       for (let i = state.bullets.length - 1; i >= 0; i--) {
         const b = state.bullets[i];
         b.x += b.vx * dt;
@@ -1326,11 +968,10 @@
         }
 
         if (!consumed && !bulletReservedForBlock(b)) {
-          bossCache = bossCache || bossFrameCache();
-          const hit = bulletHitsBody(b, bossCache);
+          const pts = state.boss.segments.map((_, s) => bossPoint(s));
+          const hit = bulletHitsBody(b, pts);
           if (hit) {
-            const destroyed = damageSegment(hit.seg, b.damage, hit.x, hit.y, b.crit);
-            if (destroyed) bossCache = bossFrameCache();
+            damageSegment(hit.seg, b.damage, hit.x, hit.y);
             b.hitIds.push(hit.seg.id);
             if (b.pierce > 0) {
               b.pierce -= 1;
@@ -1372,7 +1013,6 @@
     function updateEffects(dt) {
       for (let i = state.floating.length - 1; i >= 0; i--) {
         const f = state.floating[i];
-        f.x += (f.vx || 0) * dt;
         f.y -= 72 * dt;
         f.life -= dt;
         if (f.life <= 0) state.floating.splice(i, 1);
@@ -1381,16 +1021,9 @@
         const p = state.particles[i];
         p.x += p.vx * dt;
         p.y += p.vy * dt;
-        p.rot = (p.rot || 0) + (p.vr || 0) * dt;
         p.vy += 260 * dt;
         p.life -= dt;
         if (p.life <= 0) state.particles.splice(i, 1);
-      }
-      for (let i = state.shockwaves.length - 1; i >= 0; i--) {
-        const s = state.shockwaves[i];
-        s.radius += 620 * dt;
-        s.life -= dt;
-        if (s.life <= 0) state.shockwaves.splice(i, 1);
       }
     }
 
@@ -1484,51 +1117,14 @@
 
     function bossSegmentColor(seg, index) {
       if (index === 0) return "#f5a142";
-      if (seg.reward) return "#67dfff";
-      if (seg.armored || seg.tier === "wall") return "#d865ff";
-      if (seg.tier === "weak" || seg.tier === "crack") return "#76e8ff";
-      if (seg.tier === "tough") return "#ff79c7";
-      return index % 2 === 0 ? "#ff8bd8" : "#8bdfff";
+      if (seg.reward) return "#35dfff";
+      if (seg.armored || seg.tier === "wall") return "#e73832";
+      if (seg.tier === "weak" || seg.tier === "crack") return "#8ee052";
+      return index % 2 === 0 ? "#f6d431" : "#e84232";
     }
 
     function drawCuteBossHead(p, seg) {
       const r = seg.width * 0.58;
-      if (spriteReady(bossSheetHeadSprite)) {
-        const size = r * 3.05;
-        const hitAlpha = clamp(seg.hit || 0, 0, 1);
-        const hitFlash = hitAlpha > 0 ? Math.pow(Math.sin(hitAlpha * Math.PI * 7), 2) * hitAlpha : 0;
-        const headSprite = hitFlash > 0.1 ? bossSheetHeadSprite.hit : bossSheetHeadSprite.normal;
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(Math.sin(performance.now() * 0.002) * 0.055);
-        ctx.fillStyle = "rgba(0,0,0,0.36)";
-        ctx.beginPath();
-        ctx.ellipse(0, r * 0.82, r * 1.18, r * 0.22, 0, 0, Math.PI * 2);
-        ctx.fill();
-        if (hitFlash > 0.08) {
-          ctx.globalAlpha = hitFlash * 0.65;
-          ctx.fillStyle = "#170622";
-          ctx.beginPath();
-          ctx.ellipse(0, 0, r * 1.26, r * 0.94, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.globalAlpha = 1;
-        }
-        ctx.drawImage(headSprite, -size * 0.58, -size * 0.54, size * 1.2, size);
-        if (hitFlash > 0.08) {
-          ctx.globalAlpha = hitFlash * 0.9;
-          ctx.shadowColor = "rgba(132, 42, 210, 0.95)";
-          ctx.shadowBlur = Math.max(14, r * 0.28);
-          ctx.strokeStyle = "rgba(48, 5, 82, 0.95)";
-          ctx.lineWidth = Math.max(5, r * 0.08);
-          ctx.beginPath();
-          ctx.ellipse(0, 0, r * 1.18, r * 0.92, 0, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1;
-        }
-        ctx.restore();
-        return;
-      }
       if (bossHeadImage.complete && bossHeadImage.naturalWidth) {
         const size = r * 2.35;
         ctx.save();
@@ -1623,398 +1219,50 @@
       ctx.restore();
     }
 
-    function drawOutlinedText(text, x, y, options = {}) {
-      const font = options.font || "900 34px Microsoft YaHei";
-      ctx.save();
-      ctx.textAlign = options.align || "center";
-      ctx.textBaseline = options.baseline || "middle";
-      ctx.font = font;
-      ctx.lineJoin = "round";
-      if (options.shadowColor) {
-        ctx.shadowColor = options.shadowColor;
-        ctx.shadowBlur = options.shadowBlur || 12;
-      }
-      ctx.lineWidth = options.strokeWidth || 8;
-      ctx.strokeStyle = options.stroke || "#151515";
-      ctx.strokeText(text, x, y);
-      ctx.fillStyle = options.fill || "#ffffff";
-      ctx.fillText(text, x, y);
-      if (options.innerStroke) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = options.innerStroke;
-        ctx.strokeText(text, x, y);
-      }
-      ctx.restore();
-    }
-
-    function drawHpLabel(text, x, y, ratio = 1) {
-      const fill = ratio < 0.28 ? "#ff7a58" : ratio < 0.55 ? "#ffe45c" : "#fffdf7";
-      drawOutlinedText(text, x, y, {
-        font: "900 36px Microsoft YaHei",
-        fill,
-        stroke: "#161616",
-        strokeWidth: 9,
-        shadowColor: "rgba(255, 236, 124, 0.55)",
-        shadowBlur: 10
-      });
-    }
-
-    function drawTreasureChest(x, y, scale = 1, glow = false) {
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(scale, scale);
-      if (glow) {
-        const halo = ctx.createRadialGradient(0, 4, 8, 0, 4, 78);
-        halo.addColorStop(0, "rgba(121,255,210,0.48)");
-        halo.addColorStop(1, "rgba(121,255,210,0)");
-        ctx.fillStyle = halo;
-        ctx.beginPath();
-        ctx.arc(0, 6, 78, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = "#142216";
-      ctx.fillStyle = "#8df06e";
-      roundRect(-48, -18, 96, 48, 7, true);
-      roundRect(-48, -18, 96, 48, 7, false);
-      ctx.fillStyle = "#ac55e8";
-      roundRect(-40, -48, 80, 38, 18, true);
-      roundRect(-40, -48, 80, 38, 18, false);
-      ctx.fillStyle = "#f0f2ff";
-      ctx.fillRect(-7, -49, 14, 78);
-      ctx.strokeRect(-7, -49, 14, 78);
-      ctx.fillStyle = "#ffe86e";
-      roundRect(-13, -5, 26, 28, 5, true);
-      roundRect(-13, -5, 26, 28, 5, false);
-      ctx.fillStyle = "#172017";
-      ctx.beginPath();
-      ctx.arc(0, 8, 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillRect(-2, 8, 4, 10);
-      ctx.fillStyle = "rgba(255,255,255,0.65)";
-      ctx.fillRect(-34, -36, 16, 24);
-      ctx.fillRect(18, -36, 16, 24);
-      ctx.restore();
-    }
-
-    function bodyPalette(color) {
-      if (color === "#67dfff" || color === "#76e8ff" || color === "#8bdfff") {
-        return { top: "#dffaff", main: "#67dfff", alt: "#8af0ff", shade: "#3788e7", belly: "#e8fbff", dot: "#6c81d7", stroke: "#21406f", hit: "#ffffff" };
-      }
-      if (color === "#d865ff") {
-        return { top: "#f7d8ff", main: "#d865ff", alt: "#b96eff", shade: "#6c46cf", belly: "#f2dbff", dot: "#7e4fcc", stroke: "#3f2368", hit: "#fff1ff" };
-      }
-      return { top: "#ffe0fb", main: "#ff8bd8", alt: "#f56fc8", shade: "#b74bc1", belly: "#ffe7fb", dot: "#b260b0", stroke: "#5a245f", hit: "#fff1fb" };
-    }
-
-    function drawRibbonSection(a, b, width, color, hit, phase = 0) {
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const h = width * 0.5;
-      const palette = bodyPalette(color);
-      const scaleW = Math.max(42, width * 0.36);
-      const count = Math.max(4, Math.ceil(len / scaleW) + 2);
-      ctx.save();
-      ctx.translate(a.x, a.y);
-      ctx.rotate(Math.atan2(dy, dx));
-
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      ctx.fillStyle = "rgba(0,0,0,0.42)";
-      ctx.beginPath();
-      ctx.ellipse(len * 0.5, h * 0.78, len * 0.48, h * 0.2, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      const base = ctx.createLinearGradient(0, -h, 0, h);
-      base.addColorStop(0, hit ? "#fffde0" : palette.top);
-      base.addColorStop(0.42, hit ? "#fff49b" : palette.main);
-      base.addColorStop(0.72, palette.alt);
-      base.addColorStop(1, palette.shade);
-      ctx.lineWidth = 7;
-      ctx.strokeStyle = "rgba(22,18,28,0.9)";
-      ctx.fillStyle = base;
-      ctx.beginPath();
-      ctx.moveTo(0, -h * 0.08);
-      ctx.quadraticCurveTo(len * 0.05, -h * 0.7, len * 0.13, -h * 0.58);
-      ctx.lineTo(len * 0.93, -h * 0.58);
-      ctx.quadraticCurveTo(len * 0.99, -h * 0.6, len, -h * 0.06);
-      ctx.bezierCurveTo(len * 0.96, h * 0.54, len * 0.76, h * 0.96, len * 0.5, h * 0.9);
-      ctx.bezierCurveTo(len * 0.24, h * 0.96, len * 0.04, h * 0.54, 0, -h * 0.08);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(-10, -h * 1.25, len + 20, h * 2.1);
-      ctx.clip();
-
-      for (let k = -1; k < count; k++) {
-        const x = k * scaleW * 0.72 - (phase % 2) * scaleW * 0.18;
-        const w = scaleW * (0.92 + ((k + phase) % 3) * 0.05);
-        const peak = -h * (0.76 + ((k + phase) % 3 === 0 ? 0.2 : 0.04));
-        const bottom = h * (0.62 + (k % 2) * 0.08);
-        const leafGrad = ctx.createLinearGradient(x, peak, x, bottom);
-        leafGrad.addColorStop(0, hit ? "#fff6bd" : palette.top);
-        leafGrad.addColorStop(0.26, k % 2 ? palette.alt : palette.main);
-        leafGrad.addColorStop(1, palette.shade);
-        ctx.fillStyle = leafGrad;
-        ctx.strokeStyle = palette.stroke;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(x - w * 0.44, h * 0.56);
-        ctx.bezierCurveTo(x - w * 0.42, h * 0.1, x - w * 0.34, -h * 0.34, x, peak);
-        ctx.bezierCurveTo(x + w * 0.32, -h * 0.34, x + w * 0.42, h * 0.08, x + w * 0.44, h * 0.56);
-        ctx.quadraticCurveTo(x, bottom, x - w * 0.44, h * 0.56);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.strokeStyle = "rgba(255,255,255,0.32)";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(x - w * 0.18, h * 0.18);
-        ctx.quadraticCurveTo(x - w * 0.1, -h * 0.22, x, peak * 0.8);
-        ctx.stroke();
-      }
-      ctx.restore();
-
-      ctx.fillStyle = palette.belly;
-      ctx.strokeStyle = "rgba(40,31,70,0.34)";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(0, h * 0.24);
-      ctx.bezierCurveTo(len * 0.18, h * 0.58, len * 0.34, h * 0.76, len * 0.5, h * 0.72);
-      ctx.bezierCurveTo(len * 0.66, h * 0.76, len * 0.82, h * 0.58, len, h * 0.24);
-      ctx.lineTo(len, h * 0.88);
-      ctx.lineTo(0, h * 0.88);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.strokeStyle = "rgba(255,255,255,0.42)";
-      ctx.lineWidth = Math.max(5, width * 0.07);
-      ctx.beginPath();
-      ctx.moveTo(len * 0.1, -h * 0.34);
-      ctx.bezierCurveTo(len * 0.32, -h * 0.62, len * 0.66, -h * 0.62, len * 0.9, -h * 0.32);
-      ctx.stroke();
-
-      ctx.fillStyle = palette.dot;
-      const spots = Math.max(3, Math.floor(len / 70));
-      for (let k = 0; k < spots; k++) {
-        const x = len * (0.18 + 0.64 * k / Math.max(1, spots - 1));
-        const y = h * (0.42 + (k % 2) * 0.18);
-        ctx.globalAlpha = 0.5;
-        ctx.beginPath();
-        ctx.ellipse(x, y, width * 0.055, width * 0.032, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-      ctx.restore();
-    }
-
-    function drawScallopBand(p, q, width, colorA, colorB, hitA, hitB, index) {
-      const dx = q.x - p.x;
-      const dy = q.y - p.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const midX = (p.x + q.x) / 2;
-      const midY = (p.y + q.y) / 2;
-      drawRibbonSection(p, { x: midX, y: midY }, width, colorA, hitA, index);
-      drawRibbonSection({ x: midX, y: midY }, q, width, colorB, hitB, index + 1);
-    }
-
-    function drawScalePlate(x, y, angle, length, width, color, hit, phase) {
-      const palette = bodyPalette(color);
-      const halfL = length * 0.62;
-      const halfH = width * 0.38;
-      const hitAlpha = clamp(hit || 0, 0, 1);
-      const hitFlash = hitAlpha > 0 ? Math.pow(Math.sin(hitAlpha * Math.PI * 7), 2) * hitAlpha : 0;
-      const sprite = bossSegmentSpriteForColor(color);
-      if (spriteReady(sprite)) {
-        const visualSprite = hitFlash > 0.1 ? sprite.hit : sprite.normal;
-        const targetW = Math.max(length * 1.45, width * 1.6);
-        const targetH = Math.max(width * 1.24, targetW * 0.42);
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.fillStyle = "rgba(0,0,0,0.36)";
-        ctx.beginPath();
-        ctx.ellipse(0, targetH * 0.34, targetW * 0.38, targetH * 0.13, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.drawImage(visualSprite, -targetW * 0.5, -targetH * 0.58, targetW, targetH);
-        if (hitFlash > 0.08) {
-          ctx.globalAlpha = hitFlash * 0.95;
-          ctx.shadowColor = "rgba(120, 30, 190, 0.95)";
-          ctx.shadowBlur = Math.max(10, width * 0.18);
-          ctx.strokeStyle = "rgba(42, 4, 70, 0.95)";
-          ctx.lineWidth = Math.max(5, width * 0.075);
-          ctx.beginPath();
-          ctx.ellipse(0, -targetH * 0.02, targetW * 0.43, targetH * 0.39, 0, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1;
-        }
-        ctx.restore();
-        return;
-      }
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(angle);
-
-      ctx.fillStyle = "rgba(0,0,0,0.38)";
-      ctx.beginPath();
-      ctx.ellipse(0, halfH * 0.92, halfL * 0.86, halfH * 0.18, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = phase % 2 ? palette.alt : palette.main;
-      ctx.strokeStyle = hitFlash > 0.08 ? "rgba(12,10,16,0.98)" : "#17131f";
-      ctx.lineWidth = hitFlash > 0.08 ? 5 : 4;
-
-      ctx.beginPath();
-      ctx.moveTo(-halfL * 0.72, -halfH * 0.82);
-      ctx.lineTo(halfL * 0.72, -halfH * 0.82);
-      ctx.quadraticCurveTo(halfL, -halfH * 0.78, halfL, -halfH * 0.46);
-      ctx.lineTo(halfL, halfH * 0.34);
-      ctx.quadraticCurveTo(halfL * 0.92, halfH * 0.74, halfL * 0.54, halfH * 0.82);
-      ctx.lineTo(-halfL * 0.54, halfH * 0.82);
-      ctx.quadraticCurveTo(-halfL * 0.92, halfH * 0.74, -halfL, halfH * 0.34);
-      ctx.lineTo(-halfL, -halfH * 0.46);
-      ctx.quadraticCurveTo(-halfL, -halfH * 0.78, -halfL * 0.72, -halfH * 0.82);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.globalAlpha = 0.3;
-      ctx.fillStyle = palette.shade;
-      ctx.beginPath();
-      ctx.moveTo(-halfL * 0.96, -halfH * 0.36);
-      ctx.quadraticCurveTo(-halfL * 0.86, halfH * 0.24, -halfL * 0.42, halfH * 0.66);
-      ctx.lineTo(-halfL, halfH * 0.34);
-      ctx.closePath();
-      ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(halfL * 0.98, -halfH * 0.32);
-      ctx.quadraticCurveTo(halfL * 0.82, halfH * 0.2, halfL * 0.34, halfH * 0.68);
-      ctx.lineTo(halfL, halfH * 0.34);
-      ctx.closePath();
-      ctx.fill();
-      ctx.globalAlpha = 1;
-
-      if (hitFlash > 0.08) {
-        ctx.globalAlpha = hitFlash * 0.72;
-        ctx.fillStyle = "#190826";
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = "rgba(80, 20, 135, 0.95)";
-        ctx.lineWidth = 8;
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = "rgba(49,18,72,0.46)";
-      ctx.lineWidth = 3;
-      for (let s = -1; s <= 1; s += 2) {
-        ctx.beginPath();
-        ctx.moveTo(s * halfL * 0.18, -halfH * 0.48);
-        ctx.bezierCurveTo(s * halfL * 0.36, -halfH * 0.18, s * halfL * 0.34, halfH * 0.2, s * halfL * 0.2, halfH * 0.52);
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = "rgba(75,28,93,0.35)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(-halfL * 0.18, -halfH * 0.58);
-      ctx.quadraticCurveTo(0, -halfH * 0.72, halfL * 0.2, -halfH * 0.56);
-      ctx.stroke();
-
-      ctx.fillStyle = palette.shade;
-      ctx.globalAlpha = 0.26;
-      for (let m = 0; m < 3; m++) {
-        const px = halfL * (-0.35 + m * 0.32 + ((phase + m) % 2) * 0.08);
-        const py = halfH * (-0.18 + (m % 2) * 0.42);
-        ctx.beginPath();
-        ctx.ellipse(px, py, halfL * 0.11, halfH * 0.09, 0.2 * m, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-
-      ctx.fillStyle = palette.belly;
-      ctx.globalAlpha = 0.62;
-      ctx.beginPath();
-      ctx.ellipse(0, halfH * 0.42, halfL * 0.62, halfH * 0.18, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-
-      ctx.strokeStyle = "rgba(35,22,42,0.32)";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(-halfL * 0.78, -halfH * 0.48);
-      ctx.quadraticCurveTo(-halfL * 0.86, 0, -halfL * 0.7, halfH * 0.48);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(halfL * 0.78, -halfH * 0.48);
-      ctx.quadraticCurveTo(halfL * 0.86, 0, halfL * 0.7, halfH * 0.48);
-      ctx.stroke();
-
-      if (hitFlash > 0.08) {
-        ctx.globalAlpha = hitFlash;
-        ctx.strokeStyle = "rgba(210,126,255,0.96)";
-        ctx.lineWidth = 7;
-        ctx.beginPath();
-        ctx.moveTo(-halfL * 0.88, -halfH * 0.66);
-        ctx.quadraticCurveTo(0, -halfH * 0.9, halfL * 0.86, -halfH * 0.66);
-        ctx.stroke();
-
-        ctx.strokeStyle = "rgba(255,255,255,0.88)";
-        ctx.lineWidth = 3.5;
-        ctx.beginPath();
-        ctx.moveTo(-halfL * 0.78, -halfH * 0.72);
-        ctx.quadraticCurveTo(0, -halfH * 0.84, halfL * 0.76, -halfH * 0.72);
-        ctx.stroke();
-
-        ctx.strokeStyle = "rgba(230,196,255,0.92)";
-        ctx.lineWidth = 3;
-        for (let i = 0; i < 2; i++) {
-          const cx = (i ? 0.26 : -0.18) * halfL;
-          ctx.beginPath();
-          ctx.moveTo(cx - halfL * 0.12, -halfH * 0.12);
-          ctx.lineTo(cx + halfL * 0.02, halfH * 0.12);
-          ctx.lineTo(cx - halfL * 0.05, halfH * 0.3);
-          ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-      }
-
-      if (phase % 2 === 0) {
-        ctx.fillStyle = palette.dot;
-        ctx.globalAlpha = 0.55;
-        ctx.beginPath();
-        ctx.arc(-halfL * 0.2, halfH * 0.56, Math.max(3, width * 0.035), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 0.34;
-        ctx.beginPath();
-        ctx.arc(halfL * 0.28, halfH * 0.2, Math.max(2.5, width * 0.026), 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
-      ctx.restore();
-    }
-
-    function drawSegmentPlates(renderSegment) {
-      if (!renderSegment) return;
-      const seg = renderSegment.seg;
-      for (const plate of renderSegment.plates) {
-        drawScalePlate(plate.x, plate.y, renderSegment.angle, plate.length, plate.width, renderSegment.color, seg.hit, plate.phase);
-      }
-    }
-
     function drawBoss() {
-      const cache = bossFrameCache();
-      const pts = cache.pts;
+      const pts = state.boss.segments.map((_, i) => bossPoint(i));
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
       for (let i = state.boss.segments.length - 2; i >= 0; i--) {
-        drawSegmentPlates(cache.render[i]);
+        const seg = state.boss.segments[i];
+        const next = state.boss.segments[i + 1];
+        const p = pts[i];
+        const q = pts[i + 1];
+        const width = (seg.width + next.width) * 0.5;
+        ctx.lineWidth = width + 12;
+        ctx.strokeStyle = "rgba(0,0,0,0.42)";
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(q.x, q.y);
+        ctx.stroke();
+
+        const midX = (p.x + q.x) / 2;
+        const midY = (p.y + q.y) / 2;
+        ctx.lineWidth = width;
+        ctx.strokeStyle = seg.hit ? "#fff5a7" : bossSegmentColor(seg, i);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(midX, midY);
+        ctx.stroke();
+
+        ctx.strokeStyle = next.hit ? "#fff5a7" : bossSegmentColor(next, i + 1);
+        ctx.beginPath();
+        ctx.moveTo(midX, midY);
+        ctx.lineTo(q.x, q.y);
+        ctx.stroke();
+
+        const ang = Math.atan2(q.y - p.y, q.x - p.x);
+        ctx.save();
+        ctx.translate(midX, midY);
+        ctx.rotate(ang + Math.PI / 2);
+        ctx.strokeStyle = "rgba(40, 24, 16, 0.7)";
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(-width * 0.42, 0);
+        ctx.lineTo(width * 0.42, 0);
+        ctx.stroke();
+        ctx.restore();
       }
 
       for (let i = state.boss.segments.length - 1; i >= 0; i--) {
@@ -2023,17 +1271,56 @@
         if (i === 0) {
           drawCuteBossHead(p, seg);
           const r = seg.width * 0.5;
-          drawHpLabel(Math.ceil(seg.hp), p.x, p.y - r - 30, clamp(seg.hp / seg.maxHp, 0, 1));
+          ctx.fillStyle = "rgba(0,0,0,0.52)";
+          roundRect(p.x - 54, p.y - r - 42, 108, 30, 6, true);
+          ctx.fillStyle = "#fff8b5";
+          ctx.font = "700 24px Microsoft YaHei";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(Math.ceil(seg.hp), p.x, p.y - r - 26);
           continue;
         }
         const r = seg.width * 0.5;
-        const labelPoint = cache.labels[Math.min(i, state.boss.segments.length - 2)] || p;
+        const color = bossSegmentColor(seg, i);
+        const grad = ctx.createRadialGradient(p.x - 14, p.y - 18, 8, p.x, p.y, r);
+        grad.addColorStop(0, seg.hit ? "#ffffff" : "#fff6a5");
+        grad.addColorStop(0.48, color);
+        grad.addColorStop(1, seg.reward ? "#1087b7" : "#8f211d");
+        ctx.fillStyle = grad;
+        if (seg.reward) {
+          ctx.shadowColor = "#57f3ff";
+          ctx.shadowBlur = 24;
+        }
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(Math.sin(i * 0.8 + performance.now() * 0.001) * 0.22);
+        ctx.beginPath();
+        ctx.ellipse(0, 0, r * (i === 0 ? 1.2 : 1.05), r * 0.82, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "#151515";
+        ctx.stroke();
+        ctx.restore();
+        ctx.shadowBlur = 0;
 
         if (seg.reward) {
-          drawTreasureChest(labelPoint.x, labelPoint.y - r - 42, clamp(r / 84, 0.72, 1.02), true);
+          ctx.fillStyle = "#eaffff";
+          ctx.font = "900 22px Microsoft YaHei";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.lineWidth = 5;
+          ctx.strokeStyle = "#07525f";
+          ctx.strokeText("奖", p.x, p.y);
+          ctx.fillText("奖", p.x, p.y);
         }
 
-        drawHpLabel(Math.ceil(seg.hp), labelPoint.x, labelPoint.y, clamp(seg.hp / seg.maxHp, 0, 1));
+        ctx.fillStyle = "rgba(0,0,0,0.52)";
+        roundRect(p.x - 44, p.y - r - 34, 88, 28, 6, true);
+        ctx.fillStyle = "#fff8b5";
+        ctx.font = "700 24px Microsoft YaHei";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(Math.ceil(seg.hp), p.x, p.y - r - 20);
       }
       ctx.lineCap = "butt";
     }
@@ -2116,31 +1403,19 @@
     }
 
     function drawPlayer() {
-      if (net.enabled && state.players.length) {
-        for (const player of state.players) {
-          drawPlayerBody(player.x, player.y, player.id === net.id ? 1 : 0.78, player.character);
-          drawOutlinedText(player.name || "P", player.x, player.y + 74, {
-            font: "800 22px Microsoft YaHei",
-            fill: player.id === net.id ? "#ffef61" : "#ffffff",
-            stroke: "#111111",
-            strokeWidth: 5
-          });
-        }
-        return;
-      }
       const p = state.player;
       const visualClones = Math.min(p.clones, BALANCE.player.maxVisualShooters - 1);
       for (let i = 0; i < visualClones; i++) {
         const offset = (i - (visualClones - 1) / 2) * 52;
-        drawPlayerBody(p.x + offset, p.y, 0.42, state.character);
+        drawPlayerBody(p.x + offset, p.y, 0.42);
       }
-      drawPlayerBody(p.x, p.y, 1, state.character);
+      drawPlayerBody(p.x, p.y, 1);
     }
 
-    function drawPlayerBody(x, y, alpha, characterKey = state.character) {
+    function drawPlayerBody(x, y, alpha) {
       ctx.save();
       ctx.globalAlpha = alpha;
-      const img = characterImages[characterKey];
+      const img = characterImages[state.character];
       if (img && img.complete && img.naturalWidth) {
         ctx.fillStyle = "rgba(0,0,0,0.36)";
         ctx.beginPath();
@@ -2199,88 +1474,25 @@
     }
 
     function drawEffects() {
-      for (const s of state.shockwaves) {
-        const alpha = clamp(s.life / s.max, 0, 1);
-        ctx.save();
-        ctx.globalAlpha = alpha * (s.style === "break" ? 0.95 : 0.75);
-        ctx.strokeStyle = s.color;
-        ctx.lineWidth = (s.style === "break" ? 14 : 8) * alpha;
-        ctx.shadowColor = s.color;
-        ctx.shadowBlur = s.style === "break" ? 28 : 18;
-        ctx.beginPath();
-        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-        ctx.stroke();
-        if (s.style === "break") {
-          ctx.globalAlpha = alpha * 0.32;
-          ctx.fillStyle = s.color;
-          ctx.beginPath();
-          ctx.arc(s.x, s.y, s.radius * 0.55, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.restore();
-      }
       for (const p of state.particles) {
         ctx.globalAlpha = clamp(p.life / 0.5, 0, 1);
-        if (p.kind === "shard") {
-          ctx.save();
-          ctx.translate(p.x, p.y);
-          ctx.rotate(p.rot || 0);
-          ctx.fillStyle = p.color;
-          ctx.strokeStyle = "#151515";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(0, -p.r);
-          ctx.lineTo(p.r * 0.9, p.r * 0.4);
-          ctx.lineTo(-p.r * 0.8, p.r * 0.7);
-          ctx.closePath();
-          ctx.fill();
-          ctx.stroke();
-          ctx.restore();
-        } else {
-          const g = ctx.createRadialGradient(p.x, p.y, 1, p.x, p.y, p.r * 2.2);
-          g.addColorStop(0, "#ffffff");
-          g.addColorStop(0.42, p.color);
-          g.addColorStop(1, "rgba(255,255,255,0)");
-          ctx.fillStyle = g;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.r * 2.2, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
         ctx.globalAlpha = 1;
       }
       for (const f of state.floating) {
-        const alpha = clamp(f.life / f.max, 0, 1);
-        const rise = 1 - alpha;
-        const style = f.style || "normal";
-        const scale = style === "crit" ? 1 + Math.sin(rise * Math.PI) * 0.16
-          : style === "damage" ? 1 + Math.sin(rise * Math.PI) * 0.12
-            : style === "repel" || style === "break" ? 1 + Math.sin(rise * Math.PI) * 0.18 : 1;
-        const font = style === "crit" ? "900 40px Microsoft YaHei"
-          : style === "repel" || style === "break" ? "900 44px Microsoft YaHei"
-            : "900 37px Microsoft YaHei";
-        const damageFill = style === "damage"
-          ? (() => {
-            const g = ctx.createLinearGradient(0, -24, 0, 22);
-            g.addColorStop(0, "#ffffff");
-            g.addColorStop(0.45, "#fff172");
-            g.addColorStop(1, "#ff8c36");
-            return g;
-          })()
-          : f.color;
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        ctx.translate(f.x, f.y);
-        ctx.scale(scale, scale);
-        drawOutlinedText(f.text, 0, 0, {
-          font,
-          fill: damageFill,
-          stroke: style === "crit" ? "#3a0717" : style === "damage" ? "#25120a" : "#111111",
-          strokeWidth: style === "crit" ? 8 : style === "damage" ? 9 : 8,
-          shadowColor: style === "crit" ? "rgba(255, 60, 130, 0.45)" : f.color,
-          shadowBlur: style === "crit" ? 8 : style === "damage" ? 10 : 14,
-          innerStroke: style === "crit" || style === "damage" ? "#fff7b5" : null
-        });
-        ctx.restore();
+        ctx.globalAlpha = clamp(f.life / f.max, 0, 1);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = "#111111";
+        ctx.fillStyle = f.color;
+        ctx.font = "800 34px Microsoft YaHei";
+        ctx.strokeText(f.text, f.x, f.y);
+        ctx.fillText(f.text, f.x, f.y);
+        ctx.globalAlpha = 1;
       }
     }
 
@@ -2301,12 +1513,6 @@
       ctx.textAlign = "right";
       const timeText = state.infinite ? `${Math.floor(state.time)}秒` : `${Math.ceil(state.time)}秒`;
       ctx.fillText(timeText, W - 46, 55);
-      if (net.enabled) {
-        ctx.textAlign = "center";
-        ctx.fillStyle = net.connected ? "#60ffd0" : "#ff8676";
-        ctx.font = "800 22px Microsoft YaHei";
-        ctx.fillText(`${net.status} ${state.players.length ? state.players.length + "/4" : ""}`, W / 2, 104);
-      }
 
       ctx.textAlign = "center";
       ctx.lineWidth = 8;
@@ -2404,18 +1610,9 @@
       ctx.strokeText("守住防线", W / 2, 138);
       ctx.fillText("守住防线", W / 2, 138);
 
-      if (bossFullImage.complete && bossFullImage.naturalWidth) {
-        const imgW = W * 0.86;
-        const imgH = imgW * bossFullImage.naturalHeight / bossFullImage.naturalWidth;
-        ctx.save();
-        ctx.globalAlpha = 0.34;
-        ctx.drawImage(bossFullImage, W * 0.07, 145, imgW, imgH);
-        ctx.restore();
-      }
-
       ctx.fillStyle = "#ffffff";
       ctx.font = "700 28px Microsoft YaHei";
-      ctx.fillText(net.enabled ? `选择角色 · ${net.status}` : "选择角色", W / 2, 230);
+      ctx.fillText("选择角色", W / 2, 230);
       const characterKeys = ["classic", "zhouxian", "luo", "yang", "laoyu"];
       characterKeys.forEach((key, i) => {
         const w = 206;
@@ -2489,10 +1686,7 @@
     function handleMenuPointer(x, y) {
       const button = state.menuButtons.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
       if (!button) return false;
-      if (button.kind === "character") {
-        state.character = button.key;
-        sendNet({ type: "select", character: state.character });
-      }
+      if (button.kind === "character") state.character = button.key;
       if (button.kind === "difficulty") state.difficulty = button.key;
       if (button.kind === "mode") state.mode = button.key;
       if (button.kind === "start") startRun(state.difficulty, state.mode);
@@ -2513,25 +1707,19 @@
       }
       state.pointerDown = true;
       state.pointerX = x;
-      sendNetInput(true);
       canvas.setPointerCapture(e.pointerId);
     });
 
     canvas.addEventListener("pointermove", e => {
-      if (state.pointerDown) {
-        state.pointerX = pointerXFromEvent(e);
-        sendNetInput();
-      }
+      if (state.pointerDown) state.pointerX = pointerXFromEvent(e);
     });
 
     canvas.addEventListener("pointerup", () => {
       state.pointerDown = false;
-      sendNetInput(true);
     });
 
     window.addEventListener("keydown", e => {
       state.keys.add(e.code);
-      sendNetInput(true);
       if (!state.started && (e.code === "Space" || e.code === "Enter")) startRun(state.difficulty, state.mode);
       if (state.over && (e.code === "Space" || e.code === "Enter")) {
         state.started = false;
@@ -2539,10 +1727,7 @@
       }
     });
 
-    window.addEventListener("keyup", e => {
-      state.keys.delete(e.code);
-      sendNetInput(true);
-    });
+    window.addEventListener("keyup", e => state.keys.delete(e.code));
 
     let last = performance.now();
     function loop(now) {
@@ -2553,7 +1738,6 @@
       requestAnimationFrame(loop);
     }
 
-    connectMultiplayer();
     requestAnimationFrame(loop);
   </script>
 </body>
