@@ -142,3 +142,7 @@ Ctrl + C
 ```text
 BALANCE.md
 ```
+
+## 数值配置
+
+直接编辑 `balance.config.js` 可以调整无尽模式 300 秒后的血量、速度和性能上限。单机 `index.html` 和联机 `server.js` 都会读取这份配置。

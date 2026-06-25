@@ -1,5 +1,28 @@
 # 数值平衡记录
 
+## 2026-06-25 无尽 300 秒后降压与 Boss 受击判定优化
+
+- 新增 `balance.config.js`，单机 `index.html` 和联机 `server.js` 共用同一份外部配置。
+- 无尽模式 300 秒前尽量保持原手感；300 秒后通过 `infinite.hpSoftCapMultiplier`、`infinite.hpLateGrowth` 和 `infinite.speedLateMultiplier` 控制血量与速度继续膨胀。
+- Boss 受击判定从“每颗子弹扫描全部 hitbox”改为按 `performance.collisionBucketSize` 建空间桶，子弹只检查附近候选，再使用原来的线段距离精确判定。
+- 穿透弹命中记录从数组 `includes()` 改为常量时间标记，减少高穿透和多弹道时的线性查找。
+- 子弹、粒子、浮字、冲击波更新改为写指针压缩数组，减少循环内 `splice()` 造成的数组搬移。
+- 不改变 Boss 关节数量、长度、宽度、路径、命中半径、伤害、穿透、断节、奖励掉落等玩法规则。
+
+常用可调项：
+
+```js
+infinite.afterSeconds          // 无尽后期降压开始秒数，默认 300
+infinite.hpSoftCapMultiplier   // 后期血量软上限倍率
+infinite.hpLateGrowth          // 软上限之后的缓慢增长斜率
+infinite.speedLateMultiplier   // 后期 Boss 速度倍率
+performance.collisionBucketSize
+performance.maxHitTestsPerBullet
+performance.particleCap
+performance.floatTextCap
+performance.shockwaveCap
+```
+
 ## 2026-06-25 受击预烘焙与局域网联机初版
 
 - 问题：

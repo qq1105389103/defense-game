@@ -13,6 +13,29 @@ const MAX_PLAYERS = 4;
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const rand = (a, b) => a + Math.random() * (b - a);
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(8).toString("hex");
+const externalBalance = (() => {
+  try {
+    return require("./balance.config.js");
+  } catch {
+    return null;
+  }
+})();
+
+function mergeBalance(target, source) {
+  if (!source || typeof source !== "object") return target;
+  for (const key of Object.keys(source)) {
+    const value = source[key];
+    if (Array.isArray(value)) {
+      target[key] = value.slice();
+    } else if (value && typeof value === "object") {
+      const current = target[key];
+      target[key] = mergeBalance(current && typeof current === "object" && !Array.isArray(current) ? current : {}, value);
+    } else {
+      target[key] = value;
+    }
+  }
+  return target;
+}
 
 const CHARACTERS = {
   classic: { label: "原版", attack: 0, fireMult: 0, shots: 0, pierce: 0 },
@@ -93,8 +116,25 @@ const BALANCE = {
     { type: "clone", title: "影分身", cost: 82, color: "#c9a3ff", score: 14, amount: 1, rare: true, rareWeight: 0.25 },
     { type: "pierce", title: "穿透 +1", cost: 64, color: "#9ff0ff", score: 11, amount: 1, rare: true, rareWeight: 0.45 },
     { type: "crit", title: "暴击 +25%", cost: 58, color: "#ff72b8", score: 10, amount: 0.25, rare: true, rareWeight: 1.6 }
-  ]
+  ],
+  infinite: {
+    afterSeconds: 300,
+    hpLateGrowth: 0.08,
+    hpSoftCapMultiplier: 1.18,
+    speedLateMultiplier: 0.82
+  },
+  performance: {
+    collisionBucketSize: 180,
+    collisionActiveMargin: 260,
+    maxHitTestsPerBullet: 18,
+    particleCap: 260,
+    floatTextCap: 70,
+    shockwaveCap: 18,
+    lowPriorityParticleHeadroom: 36
+  }
 };
+
+mergeBalance(BALANCE, externalBalance);
 
 const game = {
   started: false,
@@ -109,6 +149,7 @@ const game = {
   fireTimer: 0,
   spawnTimer: 0,
   emergencyTimer: 0,
+  lateHpSoftCap: 0,
   boss: { advance: 0, spawned: 0, segments: [] },
   bullets: [],
   blocks: [],
@@ -209,7 +250,26 @@ function bossTargetDps() {
   }, BALANCE.player.startAttack * BALANCE.player.baseFireRate);
   const difficulty = BALANCE.difficulties[game.difficulty];
   const mode = BALANCE.modes[game.mode];
-  return base * BALANCE.boss.demandRatio * difficulty.demand * mode.hp * (1 + clamp(elapsedTime() / 180, 0, 1) * BALANCE.boss.timeHpRamp * difficulty.ramp) * coopScale();
+  const nowElapsed = elapsedTime();
+  const target = base * BALANCE.boss.demandRatio * difficulty.demand * mode.hp
+    * (1 + clamp(nowElapsed / 180, 0, 1) * BALANCE.boss.timeHpRamp * difficulty.ramp) * coopScale();
+  if (game.mode !== "infinite" || nowElapsed <= BALANCE.infinite.afterSeconds) return target;
+  if (!game.lateHpSoftCap) game.lateHpSoftCap = target * BALANCE.infinite.hpSoftCapMultiplier;
+  const lateGrowth = 1 + ((nowElapsed - BALANCE.infinite.afterSeconds) / 180) * BALANCE.infinite.hpLateGrowth;
+  return Math.min(target, game.lateHpSoftCap * lateGrowth);
+}
+
+function bossAdvanceSpeed() {
+  const players = activePlayers();
+  const difficulty = BALANCE.difficulties[game.difficulty];
+  const mode = BALANCE.modes[game.mode];
+  const nowElapsed = elapsedTime();
+  let speed = BALANCE.boss.speedBase * difficulty.speed * mode.speed * (1 + (players.length - 1) * 0.06)
+    + Math.min(BALANCE.boss.speedRampTime, nowElapsed) * BALANCE.boss.speedRamp * difficulty.ramp * mode.speed;
+  if (game.mode === "infinite" && nowElapsed > BALANCE.infinite.afterSeconds) {
+    speed *= BALANCE.infinite.speedLateMultiplier;
+  }
+  return speed;
 }
 
 function makeBossSegment(index) {
@@ -331,6 +391,7 @@ function buildBossFrameCache() {
   const trails = [];
   const pts = [];
   const hitboxes = [];
+  const cache = { pts, hitboxes, collisionBuckets: new Map() };
   let trail = 0;
   for (let i = 0; i < segments.length; i++) {
     trails[i] = trail;
@@ -346,14 +407,88 @@ function buildBossFrameCache() {
     const radius = ((seg.width + next.width) * 0.5) * 0.44;
     const maxRadius = radius + 16;
     hitboxes[i] = {
-      seg, start, mid, end, radius,
+      index: i, seg, start, mid, end, radius,
       minX: Math.min(start.x, mid.x, end.x) - maxRadius,
       maxX: Math.max(start.x, mid.x, end.x) + maxRadius,
       minY: Math.min(start.y, mid.y, end.y) - maxRadius,
       maxY: Math.max(start.y, mid.y, end.y) + maxRadius
     };
   }
-  return { pts, hitboxes };
+  buildCollisionBuckets(cache);
+  return cache;
+}
+
+function collisionCell(value) {
+  return Math.floor(value / BALANCE.performance.collisionBucketSize);
+}
+
+function collisionKey(x, y) {
+  return `${x},${y}`;
+}
+
+function buildCollisionBuckets(cache) {
+  const margin = BALANCE.performance.collisionActiveMargin;
+  for (const box of cache.hitboxes) {
+    if (!box || box.maxY < -margin || box.minY > H + margin) continue;
+    const minX = collisionCell(box.minX);
+    const maxX = collisionCell(box.maxX);
+    const minY = collisionCell(box.minY);
+    const maxY = collisionCell(box.maxY);
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const key = collisionKey(x, y);
+        let bucket = cache.collisionBuckets.get(key);
+        if (!bucket) {
+          bucket = [];
+          cache.collisionBuckets.set(key, bucket);
+        }
+        bucket.push(box);
+      }
+    }
+  }
+}
+
+function boxDistanceSq(p, box) {
+  const x = p.x < box.minX ? box.minX : p.x > box.maxX ? box.maxX : p.x;
+  const y = p.y < box.minY ? box.minY : p.y > box.maxY ? box.maxY : p.y;
+  const dx = p.x - x;
+  const dy = p.y - y;
+  return dx * dx + dy * dy;
+}
+
+function collisionCandidates(b, cache) {
+  const minX = collisionCell(b.x - b.r);
+  const maxX = collisionCell(b.x + b.r);
+  const minY = collisionCell(b.y - b.r);
+  const maxY = collisionCell(b.y + b.r);
+  const seen = new Set();
+  const candidates = [];
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const bucket = cache.collisionBuckets.get(collisionKey(x, y));
+      if (!bucket) continue;
+      for (const box of bucket) {
+        if (seen.has(box.seg.id)) continue;
+        seen.add(box.seg.id);
+        candidates.push(box);
+      }
+    }
+  }
+  if (candidates.length > BALANCE.performance.maxHitTestsPerBullet) {
+    candidates.sort((a, z) => boxDistanceSq(b, a) - boxDistanceSq(b, z) || a.index - z.index);
+    candidates.length = BALANCE.performance.maxHitTestsPerBullet;
+  }
+  candidates.sort((a, z) => a.index - z.index);
+  return candidates;
+}
+
+function bulletAlreadyHit(b, id) {
+  return b.hitIds && b.hitIds[id];
+}
+
+function markBulletHit(b, id) {
+  if (!b.hitIds) b.hitIds = Object.create(null);
+  b.hitIds[id] = true;
 }
 
 function pointToSegmentDistance(p, a, b) {
@@ -369,10 +504,10 @@ function pointToSegmentDistance(p, a, b) {
 }
 
 function bulletHitsBody(b, cache) {
-  for (const box of cache.hitboxes) {
+  for (const box of collisionCandidates(b, cache)) {
     if (!box) continue;
     const seg = box.seg;
-    if (b.hitIds && b.hitIds.includes(seg.id)) continue;
+    if (bulletAlreadyHit(b, seg.id)) continue;
     if (b.x < box.minX - b.r || b.x > box.maxX + b.r || b.y < box.minY - b.r || b.y > box.maxY + b.r) continue;
     const radius = box.radius + b.r;
     const hitA = pointToSegmentDistance(b, box.start, box.mid);
@@ -384,7 +519,7 @@ function bulletHitsBody(b, cache) {
 }
 
 function pushFloat(text, x, y, color, style = "normal") {
-  if (game.floating.length > 70) game.floating.shift();
+  if (game.floating.length > BALANCE.performance.floatTextCap) game.floating.shift();
   const max = style === "crit" ? 0.9 : 0.8;
   game.floating.push({ text, x, y, color, style, life: max, max, vx: style === "damage" ? rand(-22, 22) : 0 });
 }
@@ -490,7 +625,7 @@ function shootPlayer(player) {
         damage: p.attack * shooterDamageScale * (crit ? 2 : 1),
         crit,
         pierce: p.pierce,
-        hitIds: [],
+        hitIds: Object.create(null),
         color: crit ? "#ff72b8" : i % 2 ? "#59f0ff" : "#ffd357"
       });
     }
@@ -510,6 +645,7 @@ function startGame(difficulty = "easy", mode = "3min") {
   game.fireTimer = 0;
   game.spawnTimer = 0;
   game.emergencyTimer = 0;
+  game.lateHpSoftCap = 0;
   game.bullets = [];
   game.rewards = [];
   game.floating = [];
@@ -550,10 +686,7 @@ function update(dt) {
     game.fireTimer = 1 / fastest;
   }
 
-  const difficulty = BALANCE.difficulties[game.difficulty];
-  const mode = BALANCE.modes[game.mode];
-  game.boss.advance += dt * (BALANCE.boss.speedBase * difficulty.speed * mode.speed * (1 + (players.length - 1) * 0.06)
-    + Math.min(BALANCE.boss.speedRampTime, elapsedTime()) * BALANCE.boss.speedRamp * difficulty.ramp * mode.speed);
+  game.boss.advance += dt * bossAdvanceSpeed();
 
   updateBlocks(dt);
   updateBullets(dt);
@@ -576,9 +709,24 @@ function bulletReservedForBlock(b) {
   return game.blocks.some(block => block.active && b.y > block.y - block.h / 2 && b.x > block.x - block.w / 2 - b.r && b.x < block.x + block.w / 2 + b.r);
 }
 
+function nearestPlayerToBlock(players, block) {
+  let best = players[0];
+  let bestDx = best ? Math.abs(best.x - block.x) : Infinity;
+  for (let i = 1; i < players.length; i++) {
+    const dx = Math.abs(players[i].x - block.x);
+    if (dx < bestDx) {
+      best = players[i];
+      bestDx = dx;
+    }
+  }
+  return best;
+}
+
 function updateBullets(dt) {
   let cache = null;
-  for (let i = game.bullets.length - 1; i >= 0; i--) {
+  const players = activePlayers();
+  let write = 0;
+  for (let i = 0; i < game.bullets.length; i++) {
     const b = game.bullets[i];
     b.x += b.vx * dt;
     b.y += b.vy * dt;
@@ -586,7 +734,7 @@ function updateBullets(dt) {
     for (const block of game.blocks) {
       if (!block.active) continue;
       if (b.x > block.x - block.w / 2 && b.x < block.x + block.w / 2 && b.y > block.y - block.h / 2 && b.y < block.y + block.h / 2) {
-        const player = activePlayers().sort((a, z) => Math.abs(a.x - block.x) - Math.abs(z.x - block.x))[0];
+        const player = nearestPlayerToBlock(players, block);
         consumed = true;
         block.hp -= 1 / Math.pow(displayedFireMult(player), BALANCE.rewardBox.speedProgressDecay);
         block.flash = 0.08;
@@ -599,40 +747,52 @@ function updateBullets(dt) {
       const hit = bulletHitsBody(b, cache);
       if (hit) {
         damageSegment(hit.seg, b.damage, hit.x, hit.y, b.crit);
-        b.hitIds.push(hit.seg.id);
+        markBulletHit(b, hit.seg.id);
         if (b.pierce > 0) b.pierce -= 1;
         else consumed = true;
       }
     }
-    if (consumed || b.y < -30 || b.x < -40 || b.x > W + 40) game.bullets.splice(i, 1);
+    if (!(consumed || b.y < -30 || b.x < -40 || b.x > W + 40)) game.bullets[write++] = b;
   }
+  game.bullets.length = write;
   for (const seg of game.boss.segments) seg.hit = Math.max(0, seg.hit - dt);
 }
 
 function updateRewards(dt) {
-  for (let i = game.rewards.length - 1; i >= 0; i--) {
+  let write = 0;
+  let collectedGroup = "";
+  for (let i = 0; i < game.rewards.length; i++) {
     const r = game.rewards[i];
     r.y += r.vy * dt;
     r.life -= dt;
-    const player = activePlayers().find(p => p.x > r.x - r.w / 2 - p.r && p.x < r.x + r.w / 2 + p.r && p.y > r.y - r.h / 2 - p.r && p.y < r.y + r.h / 2 + p.r);
+    const player = !collectedGroup && activePlayers().find(p => p.x > r.x - r.w / 2 - p.r && p.x < r.x + r.w / 2 + p.r && p.y > r.y - r.h / 2 - p.r && p.y < r.y + r.h / 2 + p.r);
     if (player) {
       applyUpgrade(player, r.upgrade);
       pushFloat(r.title, player.x, player.y - 80, r.color);
-      game.rewards = game.rewards.filter(other => other.group !== r.group);
-      break;
+      collectedGroup = r.group;
     }
-    if (r.life <= 0 || r.y > H - 70) game.rewards.splice(i, 1);
+    if (!collectedGroup && r.life > 0 && r.y <= H - 70) game.rewards[write++] = r;
   }
+  if (collectedGroup) {
+    write = 0;
+    for (let i = 0; i < game.rewards.length; i++) {
+      const r = game.rewards[i];
+      if (r.group !== collectedGroup && r.life > 0 && r.y <= H - 70) game.rewards[write++] = r;
+    }
+  }
+  game.rewards.length = write;
 }
 
 function updateEffects(dt) {
-  for (let i = game.floating.length - 1; i >= 0; i--) {
+  let write = 0;
+  for (let i = 0; i < game.floating.length; i++) {
     const f = game.floating[i];
     f.x += (f.vx || 0) * dt;
     f.y -= 72 * dt;
     f.life -= dt;
-    if (f.life <= 0) game.floating.splice(i, 1);
+    if (f.life > 0) game.floating[write++] = f;
   }
+  game.floating.length = write;
 }
 
 function updateBossTouch() {
@@ -651,6 +811,11 @@ function publicBlock(block) {
 
 function publicReward(reward) {
   const { upgrade, ...rest } = reward;
+  return rest;
+}
+
+function publicBullet(bullet) {
+  const { hitIds, ...rest } = bullet;
   return rest;
 }
 
@@ -680,7 +845,7 @@ function snapshot() {
     time: game.time === Infinity ? 0 : game.time,
     score: game.score,
     boss: game.boss,
-    bullets: game.bullets,
+    bullets: game.bullets.map(publicBullet),
     blocks: game.blocks.map(publicBlock),
     rewards: game.rewards.map(publicReward),
     floating: game.floating,

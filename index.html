@@ -55,6 +55,7 @@
     <canvas id="game" width="1440" height="1280" aria-label="三分钟守住防线游戏"></canvas>
   </div>
 
+  <script src="balance.config.js"></script>
   <script>
     const canvas = document.querySelector("#game");
     const ctx = canvas.getContext("2d");
@@ -360,8 +361,41 @@
         { type: "clone", title: "影分身", cost: 82, color: "#c9a3ff", score: 14, amount: 1, rare: true, rareWeight: 0.25 },
         { type: "pierce", title: "穿透 +1", cost: 64, color: "#9ff0ff", score: 11, amount: 1, rare: true, rareWeight: 0.45 },
         { type: "crit", title: "暴击 +25%", cost: 58, color: "#ff72b8", score: 10, amount: 0.25, rare: true, rareWeight: 1.6 }
-      ]
+      ],
+      infinite: {
+        afterSeconds: 300,
+        hpLateGrowth: 0.08,
+        hpSoftCapMultiplier: 1.18,
+        speedLateMultiplier: 0.82
+      },
+      performance: {
+        collisionBucketSize: 180,
+        collisionActiveMargin: 260,
+        maxHitTestsPerBullet: 18,
+        particleCap: 260,
+        floatTextCap: 90,
+        shockwaveCap: 18,
+        lowPriorityParticleHeadroom: 36
+      }
     };
+
+    function mergeBalance(target, source) {
+      if (!source || typeof source !== "object") return target;
+      for (const key of Object.keys(source)) {
+        const value = source[key];
+        if (Array.isArray(value)) {
+          target[key] = value.slice();
+        } else if (value && typeof value === "object") {
+          const current = target[key];
+          target[key] = mergeBalance(current && typeof current === "object" && !Array.isArray(current) ? current : {}, value);
+        } else {
+          target[key] = value;
+        }
+      }
+      return target;
+    }
+
+    mergeBalance(BALANCE, window.GAME_BALANCE_CONFIG);
 
     const upgrades = BALANCE.upgrades.map(upgrade => ({
       ...upgrade,
@@ -482,9 +516,9 @@
       return state.infinite ? state.time : state.duration - state.time;
     }
 
-    function expectedDps() {
+    function expectedDps(sampleElapsed = elapsedTime()) {
       const difficulty = BALANCE.difficulties[state.difficulty];
-      const base = simulatedFullRewardDps(elapsedTime());
+      const base = simulatedFullRewardDps(sampleElapsed);
       const character = CHARACTERS[state.character] || CHARACTERS.classic;
       const floorStats = {
         attack: BALANCE.player.startAttack + character.attack,
@@ -498,8 +532,25 @@
       return Math.max(floor, base * BALANCE.boss.demandRatio * difficulty.demand);
     }
 
+    function infiniteLateProgress(sampleElapsed = elapsedTime()) {
+      if (state.mode !== "infinite") return 0;
+      return Math.max(0, sampleElapsed - BALANCE.infinite.afterSeconds);
+    }
+
+    function applyInfiniteHpBalance(target, sampleElapsed = elapsedTime()) {
+      const late = infiniteLateProgress(sampleElapsed);
+      if (late <= 0) return target;
+      const targetAtSoftCap = expectedDps(BALANCE.infinite.afterSeconds)
+        * BALANCE.modes.infinite.hp
+        * (1 + clamp(BALANCE.infinite.afterSeconds / 180, 0, 1) * BALANCE.boss.timeHpRamp * BALANCE.difficulties[state.difficulty].ramp);
+      const cap = targetAtSoftCap * BALANCE.infinite.hpSoftCapMultiplier;
+      const lateGrowth = 1 + (late / 180) * BALANCE.infinite.hpLateGrowth;
+      return Math.min(target, cap * lateGrowth);
+    }
+
     function bossTargetDps() {
-      const expected = expectedDps();
+      const nowElapsed = elapsedTime();
+      const expected = expectedDps(nowElapsed);
       const actual = bossReferenceDps();
       const [minRatio, maxRatio] = BALANCE.boss.actualDpsClamp;
       const clampedActual = clamp(actual, expected * minRatio, expected * maxRatio);
@@ -507,7 +558,20 @@
       const blended = expected * (1 - weight) + clampedActual * weight;
       const mode = BALANCE.modes[state.mode];
       const difficulty = BALANCE.difficulties[state.difficulty];
-      return blended * mode.hp * (1 + clamp(elapsedTime() / 180, 0, 1) * BALANCE.boss.timeHpRamp * difficulty.ramp);
+      const target = blended * mode.hp * (1 + clamp(nowElapsed / 180, 0, 1) * BALANCE.boss.timeHpRamp * difficulty.ramp);
+      return applyInfiniteHpBalance(target, nowElapsed);
+    }
+
+    function bossAdvanceSpeed() {
+      const elapsed = elapsedTime();
+      const difficulty = BALANCE.difficulties[state.difficulty];
+      const mode = BALANCE.modes[state.mode];
+      let speed = BALANCE.boss.speedBase * difficulty.speed * mode.speed
+        + Math.min(BALANCE.boss.speedRampTime, elapsed) * BALANCE.boss.speedRamp * difficulty.ramp * mode.speed;
+      if (state.mode === "infinite" && elapsed > BALANCE.infinite.afterSeconds) {
+        speed *= BALANCE.infinite.speedLateMultiplier;
+      }
+      return speed;
     }
 
     function blockDemand(block, upgrade) {
@@ -885,7 +949,7 @@
             damage: p.attack * shooterDamageScale * (crit ? 2 : 1),
             crit,
             pierce: p.pierce,
-            hitIds: [],
+            hitIds: Object.create(null),
             color: crit ? "#ff72b8" : i % 2 ? "#59f0ff" : "#ffd357"
           });
         }
@@ -951,7 +1015,7 @@
         const maxX = Math.max(start.x, mid.x, end.x) + maxRadius;
         const minY = Math.min(start.y, mid.y, end.y) - maxRadius;
         const maxY = Math.max(start.y, mid.y, end.y) + maxRadius;
-        hitboxes[i] = { seg, start, mid, end, radius, minX, maxX, minY, maxY };
+        hitboxes[i] = { index: i, seg, start, mid, end, radius, minX, maxX, minY, maxY };
         labels[i] = mid;
 
         const count = Math.max(3, Math.floor(gap / 36));
@@ -977,12 +1041,86 @@
           plates
         };
       }
-      state.bossCache = { trails, pts, labels, hitboxes, render };
+      state.bossCache = { trails, pts, labels, hitboxes, render, collisionBuckets: new Map() };
+      buildCollisionBuckets(state.bossCache);
       return state.bossCache;
     }
 
     function bossFrameCache() {
       return state.bossCache || buildBossFrameCache();
+    }
+
+    function collisionCell(value) {
+      return Math.floor(value / BALANCE.performance.collisionBucketSize);
+    }
+
+    function collisionKey(x, y) {
+      return `${x},${y}`;
+    }
+
+    function buildCollisionBuckets(cache) {
+      const margin = BALANCE.performance.collisionActiveMargin;
+      for (const box of cache.hitboxes) {
+        if (!box || box.maxY < -margin || box.minY > H + margin) continue;
+        const minX = collisionCell(box.minX);
+        const maxX = collisionCell(box.maxX);
+        const minY = collisionCell(box.minY);
+        const maxY = collisionCell(box.maxY);
+        for (let y = minY; y <= maxY; y++) {
+          for (let x = minX; x <= maxX; x++) {
+            const key = collisionKey(x, y);
+            let bucket = cache.collisionBuckets.get(key);
+            if (!bucket) {
+              bucket = [];
+              cache.collisionBuckets.set(key, bucket);
+            }
+            bucket.push(box);
+          }
+        }
+      }
+    }
+
+    function collisionCandidates(b, cache) {
+      const minX = collisionCell(b.x - b.r);
+      const maxX = collisionCell(b.x + b.r);
+      const minY = collisionCell(b.y - b.r);
+      const maxY = collisionCell(b.y + b.r);
+      const seen = new Set();
+      const candidates = [];
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const bucket = cache.collisionBuckets.get(collisionKey(x, y));
+          if (!bucket) continue;
+          for (const box of bucket) {
+            if (seen.has(box.seg.id)) continue;
+            seen.add(box.seg.id);
+            candidates.push(box);
+          }
+        }
+      }
+      if (candidates.length > BALANCE.performance.maxHitTestsPerBullet) {
+        candidates.sort((a, z) => boxDistanceSq(b, a) - boxDistanceSq(b, z) || a.index - z.index);
+        candidates.length = BALANCE.performance.maxHitTestsPerBullet;
+      }
+      candidates.sort((a, z) => a.index - z.index);
+      return candidates;
+    }
+
+    function boxDistanceSq(p, box) {
+      const x = p.x < box.minX ? box.minX : p.x > box.maxX ? box.maxX : p.x;
+      const y = p.y < box.minY ? box.minY : p.y > box.maxY ? box.maxY : p.y;
+      const dx = p.x - x;
+      const dy = p.y - y;
+      return dx * dx + dy * dy;
+    }
+
+    function bulletAlreadyHit(b, id) {
+      return b.hitIds && b.hitIds[id];
+    }
+
+    function markBulletHit(b, id) {
+      if (!b.hitIds) b.hitIds = Object.create(null);
+      b.hitIds[id] = true;
     }
 
     function bossPathDistance(index) {
@@ -994,8 +1132,9 @@
 
     function bossPressureY() {
       let maxY = -Infinity;
-      for (let i = 0; i < state.boss.segments.length; i++) {
-        const p = bossPoint(i);
+      const cache = bossFrameCache();
+      for (let i = 0; i < cache.pts.length; i++) {
+        const p = cache.pts[i];
         if (p.y > maxY) maxY = p.y;
       }
       return maxY;
@@ -1003,19 +1142,21 @@
 
     function tuneIncomingBossSegments() {
       const dps = bossTargetDps();
+      let trail = 0;
       for (let i = 0; i < state.boss.segments.length; i++) {
         const seg = state.boss.segments[i];
-        if (seg.tuned) continue;
-        if (bossPathDistance(i) < BALANCE.boss.activateDistance) continue;
-        const minHp = seg.tier === "crack" || seg.tier === "weak"
-          ? BALANCE.boss.weakMinHp
-          : seg.tier === "reward"
-            ? BALANCE.boss.rewardMinHp
-            : BALANCE.boss.minHp;
-        const hp = Math.max(minHp, dps * seg.killTime);
-        seg.hp = Math.round(hp);
-        seg.maxHp = seg.hp;
-        seg.tuned = true;
+        if (!seg.tuned && state.boss.advance - trail - segmentDelay(seg) >= BALANCE.boss.activateDistance) {
+          const minHp = seg.tier === "crack" || seg.tier === "weak"
+            ? BALANCE.boss.weakMinHp
+            : seg.tier === "reward"
+              ? BALANCE.boss.rewardMinHp
+              : BALANCE.boss.minHp;
+          const hp = Math.max(minHp, dps * seg.killTime);
+          seg.hp = Math.round(hp);
+          seg.maxHp = seg.hp;
+          seg.tuned = true;
+        }
+        trail += seg.len * 0.72;
       }
     }
 
@@ -1067,10 +1208,10 @@
     }
 
     function bulletHitsBody(b, cache) {
-      for (const box of cache.hitboxes) {
+      for (const box of collisionCandidates(b, cache)) {
         if (!box) continue;
         const seg = box.seg;
-        if (b.hitIds && b.hitIds.includes(seg.id)) continue;
+        if (bulletAlreadyHit(b, seg.id)) continue;
         if (b.x < box.minX - b.r || b.x > box.maxX + b.r || b.y < box.minY - b.r || b.y > box.maxY + b.r) continue;
         const radius = box.radius + b.r;
         const hitA = pointToSegmentDistance(b, box.start, box.mid);
@@ -1086,7 +1227,7 @@
       const tailIndex = state.boss.segments.length - 1;
       const tail = state.boss.segments[tailIndex];
       const p = cache.pts[tailIndex];
-      if (tail && (!b.hitIds || !b.hitIds.includes(tail.id)) && Math.hypot(b.x - p.x, b.y - p.y) < tail.width * 0.5 + b.r) {
+      if (tail && !bulletAlreadyHit(b, tail.id) && Math.hypot(b.x - p.x, b.y - p.y) < tail.width * 0.5 + b.r) {
         return { seg: tail, x: p.x, y: p.y };
       }
       return null;
@@ -1099,7 +1240,7 @@
         floatText(`-${Math.round(amount)}`, x, y - 18, "#ff5fb5", "crit");
       } else {
         floatText(`-${Math.round(amount)}`, x, y, "#fffdf2", "damage");
-        burst(x, y, seg.hue, 4);
+        burst(x, y, seg.hue, 4, "low");
       }
       if (seg.hp <= 0) {
         const idx = state.boss.segments.indexOf(seg);
@@ -1158,7 +1299,7 @@
     }
 
     function floatText(text, x, y, color, style = "normal") {
-      if (state.floating.length > 90) state.floating.shift();
+      if (state.floating.length > BALANCE.performance.floatTextCap) state.floating.shift();
       const max = style === "crit" ? 1.05 : style === "repel" || style === "break" ? 1.15 : 0.9;
       state.floating.push({
         text,
@@ -1173,14 +1314,17 @@
     }
 
     function shockwave(x, y, color, style = "normal") {
-      if (state.shockwaves.length > 18) state.shockwaves.shift();
+      if (state.shockwaves.length > BALANCE.performance.shockwaveCap) state.shockwaves.shift();
       const max = style === "break" ? 0.62 : 0.42;
       state.shockwaves.push({ x, y, color, radius: style === "break" ? 12 : 22, style, life: max, max });
     }
 
-    function burst(x, y, color, n) {
-      if (state.particles.length > 260) return;
-      n = Math.min(n, 260 - state.particles.length);
+    function burst(x, y, color, n, priority = "normal") {
+      const cap = BALANCE.performance.particleCap;
+      const headroom = BALANCE.performance.lowPriorityParticleHeadroom;
+      if (state.particles.length > cap) return;
+      if (priority === "low" && state.particles.length > cap - headroom) return;
+      n = Math.min(n, cap - state.particles.length);
       for (let i = 0; i < n; i++) {
         state.particles.push({
           x,
@@ -1195,8 +1339,9 @@
     }
 
     function breakExplosion(x, y, color) {
-      if (state.particles.length > 260) return;
-      const room = 260 - state.particles.length;
+      const cap = BALANCE.performance.particleCap;
+      if (state.particles.length > cap) return;
+      const room = cap - state.particles.length;
       const n = Math.min(58, room);
       state.shake = Math.max(state.shake, 8);
       for (let i = 0; i < n; i++) {
@@ -1259,6 +1404,12 @@
         state.spawnTimer = rand(15, 24);
       }
 
+      state.boss.advance += dt * bossAdvanceSpeed();
+      state.bossCache = null;
+      state.shake = Math.max(0, state.shake - dt * 42);
+      state.dangerCooldown = Math.max(0, state.dangerCooldown - dt);
+      tuneIncomingBossSegments();
+
       state.emergencyTimer = Math.max(0, state.emergencyTimer - dt);
       const hasEmergency = state.blocks.some(block => block.emergency);
       if (bossPressureY() > BALANCE.difficulties[state.difficulty].emergencyY
@@ -1267,16 +1418,6 @@
         state.emergencyTimer = BALANCE.rewardBox.emergencyCooldown;
         floatText("救急奖励!", W / 2, H - 560, "#63e26f");
       }
-
-      const elapsed = elapsedTime();
-      const difficulty = BALANCE.difficulties[state.difficulty];
-      const mode = BALANCE.modes[state.mode];
-      state.boss.advance += dt * (BALANCE.boss.speedBase * difficulty.speed * mode.speed
-        + Math.min(BALANCE.boss.speedRampTime, elapsed) * BALANCE.boss.speedRamp * difficulty.ramp * mode.speed);
-      state.bossCache = null;
-      state.shake = Math.max(0, state.shake - dt * 42);
-      state.dangerCooldown = Math.max(0, state.dangerCooldown - dt);
-      tuneIncomingBossSegments();
 
       updateBullets(dt);
       updateBlocks(dt);
@@ -1305,7 +1446,8 @@
 
     function updateBullets(dt) {
       let bossCache = null;
-      for (let i = state.bullets.length - 1; i >= 0; i--) {
+      let write = 0;
+      for (let i = 0; i < state.bullets.length; i++) {
         const b = state.bullets[i];
         b.x += b.vx * dt;
         b.y += b.vy * dt;
@@ -1331,7 +1473,7 @@
           if (hit) {
             const destroyed = damageSegment(hit.seg, b.damage, hit.x, hit.y, b.crit);
             if (destroyed) bossCache = bossFrameCache();
-            b.hitIds.push(hit.seg.id);
+            markBulletHit(b, hit.seg.id);
             if (b.pierce > 0) {
               b.pierce -= 1;
             } else {
@@ -1340,10 +1482,9 @@
           }
         }
 
-        if (consumed || b.y < -30 || b.x < -40 || b.x > W + 40) {
-          state.bullets.splice(i, 1);
-        }
+        if (!(consumed || b.y < -30 || b.x < -40 || b.x > W + 40)) state.bullets[write++] = b;
       }
+      state.bullets.length = write;
       for (const seg of state.boss.segments) {
         seg.hit = Math.max(0, seg.hit - dt);
       }
@@ -1351,58 +1492,75 @@
 
     function updateRewards(dt) {
       const p = state.player;
-      for (let i = state.rewards.length - 1; i >= 0; i--) {
+      let write = 0;
+      let collectedGroup = "";
+      for (let i = 0; i < state.rewards.length; i++) {
         const r = state.rewards[i];
         r.y += r.vy * dt;
         r.life -= dt;
-        const hit = p.x > r.x - r.w / 2 - p.r && p.x < r.x + r.w / 2 + p.r
+        const hit = !collectedGroup
+          && p.x > r.x - r.w / 2 - p.r && p.x < r.x + r.w / 2 + p.r
           && p.y > r.y - r.h / 2 - p.r && p.y < r.y + r.h / 2 + p.r;
         if (hit) {
           r.apply();
           floatText(r.title, p.x, p.y - 80, r.color);
           burst(p.x, p.y - 26, r.color, 18);
-          state.rewards = state.rewards.filter(other => other.group !== r.group);
-          break;
-        } else if (r.life <= 0 || r.y > H - 70) {
-          state.rewards.splice(i, 1);
+          collectedGroup = r.group;
+        }
+        if (!collectedGroup && r.life > 0 && r.y <= H - 70) {
+          state.rewards[write++] = r;
         }
       }
+      if (collectedGroup) {
+        write = 0;
+        for (let i = 0; i < state.rewards.length; i++) {
+          const r = state.rewards[i];
+          if (r.group !== collectedGroup && r.life > 0 && r.y <= H - 70) state.rewards[write++] = r;
+        }
+      }
+      state.rewards.length = write;
     }
 
     function updateEffects(dt) {
-      for (let i = state.floating.length - 1; i >= 0; i--) {
+      let floatingWrite = 0;
+      for (let i = 0; i < state.floating.length; i++) {
         const f = state.floating[i];
         f.x += (f.vx || 0) * dt;
         f.y -= 72 * dt;
         f.life -= dt;
-        if (f.life <= 0) state.floating.splice(i, 1);
+        if (f.life > 0) state.floating[floatingWrite++] = f;
       }
-      for (let i = state.particles.length - 1; i >= 0; i--) {
+      state.floating.length = floatingWrite;
+
+      let particleWrite = 0;
+      for (let i = 0; i < state.particles.length; i++) {
         const p = state.particles[i];
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.rot = (p.rot || 0) + (p.vr || 0) * dt;
         p.vy += 260 * dt;
         p.life -= dt;
-        if (p.life <= 0) state.particles.splice(i, 1);
+        if (p.life > 0) state.particles[particleWrite++] = p;
       }
-      for (let i = state.shockwaves.length - 1; i >= 0; i--) {
+      state.particles.length = particleWrite;
+
+      let shockwaveWrite = 0;
+      for (let i = 0; i < state.shockwaves.length; i++) {
         const s = state.shockwaves[i];
         s.radius += 620 * dt;
         s.life -= dt;
-        if (s.life <= 0) state.shockwaves.splice(i, 1);
+        if (s.life > 0) state.shockwaves[shockwaveWrite++] = s;
       }
+      state.shockwaves.length = shockwaveWrite;
     }
 
     function checkBossTouch() {
       const p = state.player;
       if (!state.boss.segments.length) return;
       if (state.dangerCooldown > 0) return;
-      const head = bossPoint(0);
-      const tailThreat = state.boss.segments.some((_, i) => {
-        const bp = bossPoint(i);
-        return bp.y > p.y - 48 && Math.abs(bp.x - p.x) < 54;
-      });
+      const cache = bossFrameCache();
+      const head = cache.pts[0];
+      const tailThreat = cache.pts.some(bp => bp.y > p.y - 48 && Math.abs(bp.x - p.x) < 54);
       if (head.y > H - 170 || tailThreat) {
         p.hp -= 1;
         state.dangerCooldown = 0.85;
