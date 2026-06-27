@@ -161,8 +161,6 @@
       connected: false,
       lastInputAt: 0,
       inputInterval: 25,
-      inputSeq: 0,
-      lastAckSeq: 0,
       remotePlayers: new Map(),
       renderPlayers: [],
       lastPlayerFrameAt: 0,
@@ -322,21 +320,11 @@
       player: {
         startAttack: 240,
         baseFireRate: 4.3,
-        keyboardMoveSpeed: 560,
-        pointerFollowRate: 8,
         maxShots: 7,
         maxClones: Infinity,
         maxPierce: Infinity,
         maxCrit: Infinity,
         maxVisualShooters: 5
-      },
-      network: {
-        inputIntervalMs: 16,
-        playerSnapshotHz: 60,
-        worldSnapshotHz: 30,
-        remoteInterpolationMs: 50,
-        selfCorrectionRate: 28,
-        bossCorrectionRate: 12
       },
       // 超稀有词条参数：默认不参与Boss血量/DPS成长，只影响实际发射或命中时的偶发效果。
       ultraRareBalance: {
@@ -386,7 +374,7 @@
         weakChance: 0.28,
         toughChance: 0.16,
         wallChance: 0.06,
-        rewardChance: 0.36,
+        rewardChance: 0.16,
         activateDistance: -260,
         fullRewardInterval: 8,
         expectedRewardQuality: 0.66,
@@ -435,11 +423,7 @@
         jointRareChanceDecay: 0.06,
         jointRareChanceMin: 0.07,
         ultraDropChance: 0.08,
-        respawnDelay: 4.5,
-        teammateShareRatio: 0.5,
-        rareTeammateShareRatio: 0.5,
-        ultraTeammateShareRatio: 0.3,
-        jointDropSpeed: 170,
+        respawnDelay: 7,
         resetInterval: 300,
         emergencyCooldown: 18
       },
@@ -504,7 +488,6 @@
 
     mergeBalance(BALANCE, window.GAME_BALANCE_CONFIG);
     normalizeBalanceConfig(window.GAME_BALANCE_CONFIG);
-    net.inputInterval = BALANCE.network.inputIntervalMs || net.inputInterval;
 
     const upgrades = BALANCE.upgrades.map(upgrade => ({
       ...upgrade,
@@ -582,8 +565,8 @@
 
     function statsDps(stats) {
       const critMult = 1 + Math.min(1, stats.crit) * (1 + (stats.critDamage || 0));
-      return stats.attack * BALANCE.player.baseFireRate * Math.max(1, stats.fireMult) * Math.max(1, Math.floor(stats.shots))
-        * (1 + Math.max(0, Math.floor(stats.clones))) * critMult * (1 + Math.max(0, Math.floor(stats.pierce)) * 0.32);
+      return stats.attack * BALANCE.player.baseFireRate * Math.max(1, stats.fireMult) * stats.shots
+        * (1 + stats.clones) * critMult * (1 + stats.pierce * 0.32);
     }
 
     function simulatedFullRewardDps(seconds) {
@@ -618,7 +601,7 @@
         const upgrade = pool[rewardCount % pool.length];
         const speed = Math.max(1, stats.fireMult);
         const demand = Math.ceil(upgrade.cost * slot.scale * (1 + Math.max(0, speed - 1) * BALANCE.rewardBox.speedDemandScale));
-        const hitsPerSecond = BALANCE.player.baseFireRate * speed * Math.max(1, Math.floor(stats.shots)) * (1 + Math.max(0, Math.floor(stats.clones)));
+        const hitsPerSecond = BALANCE.player.baseFireRate * speed * stats.shots * (1 + stats.clones);
         const progressPerSecond = hitsPerSecond * (1 / Math.pow(speed, BALANCE.rewardBox.speedProgressDecay)) * BALANCE.rewardBox.modelAttention;
         time += demand / Math.max(1, progressPerSecond);
         if (time > nextJointReward) {
@@ -1017,7 +1000,7 @@
         rarePierce: 0,
         rareCrit: 0,
         rareCount: 0,
-        speed: BALANCE.player.keyboardMoveSpeed,
+        speed: 560,
         bulletSpeed: 840,
         giantLevel: 0,
         splitLevel: 0,
@@ -1053,8 +1036,6 @@
       net.lastInputAt = now;
       sendNet({
         type: "input",
-        seq: ++net.inputSeq,
-        x: state.player.x,
         pointerDown: state.pointerDown,
         pointerX: state.pointerX,
         dir: currentInputDir(),
@@ -1083,9 +1064,7 @@
       if (!net.enabled || net.bossTargetAdvance === null || revision !== net.bossRevision) {
         boss.advance = serverAdvance;
       }
-      net.bossTargetAdvance = revision === net.bossRevision
-        ? Math.max(serverAdvance, boss.advance || 0)
-        : serverAdvance;
+      net.bossTargetAdvance = serverAdvance;
       net.bossRevision = revision;
       net.lastWorldServerTime = serverTime;
       boss.spawned = source.spawned || 0;
@@ -1094,52 +1073,18 @@
       state.boss = boss;
     }
 
-    function copyEntityFrame(entity, data, smooth = 0.45) {
-      const x = entity.x;
-      const y = entity.y;
-      Object.assign(entity, data);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      const dx = data.x - x;
-      const dy = data.y - y;
-      const distSq = dx * dx + dy * dy;
-      if (distSq > 220 * 220) return;
-      entity.x = x + dx * smooth;
-      entity.y = y + dy * smooth;
+    function replaceNetBullets(source) {
+      for (const b of state.bullets) releaseBullet(b);
+      state.bullets.length = 0;
+      if (!Array.isArray(source)) return;
+      for (const data of source) state.bullets.push(makeBullet(data));
     }
 
-    function syncEntityArray(target, source, create, release, smooth = 0.45) {
-      if (!Array.isArray(source)) {
-        for (const item of target) if (release) release(item);
-        target.length = 0;
-        return;
-      }
-      const byId = new Map();
-      for (const item of target) if (item && item.id) byId.set(item.id, item);
-      let write = 0;
-      for (const data of source) {
-        let item = data.id ? byId.get(data.id) : null;
-        if (item) {
-          copyEntityFrame(item, data, smooth);
-          byId.delete(data.id);
-        } else {
-          item = create(data);
-        }
-        target[write++] = item;
-      }
-      target.length = write;
-      for (const item of byId.values()) if (release) release(item);
-    }
-
-    function syncNetBullets(source) {
-      syncEntityArray(state.bullets, source, makeBullet, releaseBullet, 0.35);
-    }
-
-    function syncNetMissiles(source) {
-      syncEntityArray(state.missiles, source, makeMissile, releaseMissile, 0.35);
-    }
-
-    function syncNetRewards(source) {
-      syncEntityArray(state.rewards, source, data => ({ ...data }), null, 0.5);
+    function replaceNetMissiles(source) {
+      for (const m of state.missiles) releaseMissile(m);
+      state.missiles.length = 0;
+      if (!Array.isArray(source)) return;
+      for (const data of source) state.missiles.push(makeMissile(data));
     }
 
     function replaceNetEffects(snapshot) {
@@ -1178,9 +1123,9 @@
       state.mode = snapshot.mode || state.mode;
       copyBossState(snapshot.boss, snapshot.serverTime || Date.now());
       copyObjectArray(state.blocks, snapshot.blocks || []);
-      syncNetRewards(snapshot.rewards || []);
-      syncNetBullets(snapshot.bullets || []);
-      syncNetMissiles(snapshot.missiles || []);
+      copyObjectArray(state.rewards, snapshot.rewards || []);
+      replaceNetBullets(snapshot.bullets || []);
+      replaceNetMissiles(snapshot.missiles || []);
       replaceNetEffects(snapshot);
       state.bossCache = null;
     }
@@ -1217,12 +1162,10 @@
       const me = net.id ? state.players.find(p => p.id === net.id) : null;
       if (me) {
         state.character = me.character || state.character;
-        net.lastAckSeq = Math.max(net.lastAckSeq || 0, me.lastInputSeq || 0);
         Object.assign(state.player, me.stats || {}, { y: me.y, hp: me.hp, r: me.r || state.player.r });
         const dx = me.x - state.player.x;
-        if (Math.abs(dx) > 180) state.player.x = me.x;
-        else if (Math.abs(dx) > 32) net.correctionX = me.x;
-        else net.correctionX = null;
+        if (Math.abs(dx) > 120) state.player.x = me.x;
+        else net.correctionX = me.x;
       }
     }
 
@@ -1265,13 +1208,12 @@
     function shoot() {
       const p = state.player;
       const spread = 22;
-      const shots = Math.max(1, Math.floor(p.shots));
-      const totalShooters = 1 + Math.max(0, Math.floor(p.clones));
+      const totalShooters = 1 + p.clones;
       const visualShooters = Math.min(totalShooters, BALANCE.player.maxVisualShooters);
       const shooterDamageScale = totalShooters / visualShooters;
       const bulletCap = 360;
-      const reserve = visualShooters * shots;
-      const shotMid = (shots - 1) / 2;
+      const reserve = visualShooters * p.shots;
+      const shotMid = (p.shots - 1) / 2;
       const critChance = Math.min(1, p.crit);
       const critDamage = 2 + (p.critDamage || 0);
       const baseDamage = p.attack * shooterDamageScale;
@@ -1280,7 +1222,7 @@
       //trimBulletsForReserve(bulletCap, reserve);
       for (let s = 0; s < visualShooters; s++) {
         const shooterOffset = (s - (visualShooters - 1) / 2) * 46;
-        for (let i = 0; i < shots; i++) {
+        for (let i = 0; i < p.shots; i++) {
           const offset = (i - shotMid) * spread;
           const crit = Math.random() < critChance;
           const giant = Math.random() < ultra.giant;
@@ -1310,7 +1252,7 @@
             -p.bulletSpeed,
             baseDamage * critMult * giantMult,
             crit || giant,
-            Math.max(0, Math.floor(p.pierce)),
+            p.pierce,
             color,
             split,
             frost,
@@ -1323,7 +1265,7 @@
     function ultraChances(p) {
       const cfg = BALANCE.ultraRareBalance;
       const fireRate = p.baseFireRate * Math.max(1, p.fireMult);
-      const throughput = Math.max(1, fireRate * Math.max(1, Math.floor(p.shots)) * Math.max(1, 1 + Math.max(0, Math.floor(p.clones || 0))));
+      const throughput = Math.max(1, fireRate * Math.max(1, p.shots) * Math.max(1, 1 + (p.clones || 0)));
       const reference = Math.max(1, cfg.referenceThroughput);
       const throughputScale = Math.pow(throughput / reference, cfg.throughputSoftness);
       const chanceFor = (kind, level) => {
@@ -1376,9 +1318,7 @@
     }
 
     function makeBullet(data) {
-      const b = makeBulletValues(data.x, data.y, data.r, data.vx, data.vy, data.damage, data.crit, data.pierce, data.color, data.split, data.frost, data.giant);
-      b.id = data.id;
-      return b;
+      return makeBulletValues(data.x, data.y, data.r, data.vx, data.vy, data.damage, data.crit, data.pierce, data.color, data.split, data.frost, data.giant);
     }
 
     function makeBulletValues(x, y, r, vx, vy, damage, crit, pierce, color, split = false, frost = false, giant = false) {
@@ -1848,9 +1788,9 @@
           group,
           x: center + (i - (pair.length - 1) / 2) * gap,
           y,
-          w: 184,
+          w: 238,
           h: 128,
-          vy: BALANCE.rewardBox.jointDropSpeed,
+          vy: 125,
           title: u.title,
           color: u.color,
           apply: u.apply,
@@ -1983,11 +1923,11 @@
       const dir = (state.keys.has("ArrowRight") || state.keys.has("KeyD") ? 1 : 0)
         - (state.keys.has("ArrowLeft") || state.keys.has("KeyA") ? 1 : 0);
       if (state.pointerDown) {
-        p.x += (state.pointerX - p.x) * Math.min(1, dt * BALANCE.player.pointerFollowRate);
+        p.x += (state.pointerX - p.x) * Math.min(1, dt * 12);
       } else {
         p.x += dir * p.speed * dt;
       }
-      const cloneEdge = Math.floor(p.clones) > 0 ? 64 : 0;
+      const cloneEdge = p.clones > 0 ? 64 : 0;
       p.x = clamp(p.x, 58 + cloneEdge, W - 58 - cloneEdge);
 
       state.fireTimer -= dt;
@@ -2037,14 +1977,14 @@
       if (!state.started || state.over) return;
       const p = state.player;
       if (state.pointerDown) {
-        p.x += (state.pointerX - p.x) * Math.min(1, dt * BALANCE.player.pointerFollowRate);
+        p.x += (state.pointerX - p.x) * Math.min(1, dt * 12);
       } else {
         p.x += currentInputDir() * p.speed * dt;
       }
       p.x = clamp(p.x, 58, W - 58);
       if (Number.isFinite(net.correctionX)) {
         const dx = net.correctionX - p.x;
-        if (Math.abs(dx) > 2) p.x += dx * Math.min(1, dt * BALANCE.network.selfCorrectionRate);
+        if (Math.abs(dx) > 2) p.x += dx * Math.min(1, dt * 18);
         else net.correctionX = null;
       }
     }
@@ -2067,7 +2007,7 @@
           continue;
         }
         const frames = entry.frames;
-        const targetTime = now - BALANCE.network.remoteInterpolationMs;
+        const targetTime = now - 90;
         let a = frames[0];
         let b = frames[frames.length - 1] || a;
         for (let i = 0; i < frames.length - 1; i++) {
@@ -2106,7 +2046,7 @@
         state.boss.freezeTimer = Math.max(0, (state.boss.freezeTimer || 0) - dt);
         if (Number.isFinite(net.bossTargetAdvance)) {
           const dx = net.bossTargetAdvance - state.boss.advance;
-          const pull = Math.abs(dx) > 260 ? 1 : Math.min(1, dt * BALANCE.network.bossCorrectionRate);
+          const pull = Math.abs(dx) > 260 ? 1 : Math.min(1, dt * 5.5);
           state.boss.advance += dx * pull;
         }
         state.bossCache = null;
@@ -3174,7 +3114,7 @@ if (hitFlash > 0.08) {
         return;
       }
       const p = state.player;
-      const visualClones = Math.min(Math.max(0, Math.floor(p.clones)), BALANCE.player.maxVisualShooters - 1);
+      const visualClones = Math.min(p.clones, BALANCE.player.maxVisualShooters - 1);
       for (let i = 0; i < visualClones; i++) {
         const offset = (i - (visualClones - 1) / 2) * 52;
         drawPlayerBody(p.x + offset, p.y, 0.42, state.character);
